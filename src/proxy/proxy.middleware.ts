@@ -23,13 +23,6 @@ export class ProxyMiddleware implements NestMiddleware {
       changeOrigin: true,
       ws: true,
       on: {
-        proxyReq: (proxyReq, req) => {
-          const user = (req as Request & { user?: unknown }).user;
-          if (user) {
-            proxyReq.setHeader('x-gateway-user', JSON.stringify(user));
-          }
-          this.logger.debug(`Proxying ${req.method} ${req.url} → ${downstreamUrl}`);
-        },
         error: (err, _req, res) => {
           this.logger.error(`Proxy error: ${(err as Error).message}`);
           const serverRes = res as ServerResponse;
@@ -47,6 +40,12 @@ export class ProxyMiddleware implements NestMiddleware {
   }
 
   use(req: Request, res: Response, next: NextFunction): void {
+    const user = (req as Request & { user?: unknown }).user;
+    if (user) {
+      // Inyectado aquí: el proxy copia req.headers al proxyReq antes de asignar el socket
+      req.headers['x-gateway-user'] = JSON.stringify(user);
+    }
+    this.logger.debug(`Proxying ${req.method} ${req.url} → ${this.configService.get('DOWNSTREAM_URL')}`);
     this.proxy(req, res, next);
   }
 }
