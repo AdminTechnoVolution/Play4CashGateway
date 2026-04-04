@@ -1,0 +1,8 @@
+{
+    "appService.zipIgnorePattern": [
+        "node_modules{,/**}",
+        ".vscode{,/**}"
+    ],
+    "appService.defaultWebAppToDeploy": "/subscriptions/9785262f-0b83-4727-b684-5e00ed434cad/resourceGroups/play4cash-rg/providers/Microsoft.Web/sites/p4c-gateway",
+    "appService.deploySubpath": "."
+}
