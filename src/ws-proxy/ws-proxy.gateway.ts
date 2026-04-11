@@ -19,7 +19,12 @@ const PROXY_NAMESPACES = [
 ];
 
 @WebSocketGateway({
-  cors: { origin: '*', credentials: true },
+  cors: {
+    origin: process.env.CORS_ORIGINS
+      ? process.env.CORS_ORIGINS.split(',').map((o) => o.trim())
+      : true,
+    credentials: true,
+  },
   transports: ['websocket', 'polling'],
 })
 export class WsProxyGateway implements OnGatewayInit {
@@ -78,16 +83,25 @@ export class WsProxyGateway implements OnGatewayInit {
 
     this.sessions.set(client.id, backendSocket);
 
+    // Buffer de eventos recibidos antes de que el backend esté listo
+    const pendingEvents: { event: string; args: unknown[] }[] = [];
+
     backendSocket.on('connect', () => {
       this.logger.log(
         `[${namespace}] Backend conectado para cliente ${client.id}`,
       );
+      // Vaciar buffer de eventos en orden
+      for (const { event, args } of pendingEvents) {
+        backendSocket.emit(event, ...args);
+      }
+      pendingEvents.length = 0;
     });
 
     backendSocket.on('connect_error', (err) => {
       this.logger.error(
         `[${namespace}] Error backend para ${client.id}: ${err.message}`,
       );
+      pendingEvents.length = 0; // Backend inalcanzable, descartar eventos
       client.emit('exception', { message: 'Backend no disponible' });
     });
 
@@ -96,10 +110,12 @@ export class WsProxyGateway implements OnGatewayInit {
       client.emit(event, ...args);
     });
 
-    // ── Cliente → Backend (transparente) ──────────────────────────────────
+    // ── Cliente → Backend (con buffer si aún no conecta) ──────────────────
     client.onAny((event: string, ...args: unknown[]) => {
       if (backendSocket.connected) {
         backendSocket.emit(event, ...args);
+      } else {
+        pendingEvents.push({ event, args });
       }
     });
 
@@ -109,6 +125,7 @@ export class WsProxyGateway implements OnGatewayInit {
       this.logger.log(
         `[${namespace}] Cliente ${client.id} desconectado (${reason}) → cerrando socket backend`,
       );
+      pendingEvents.length = 0;
       backendSocket.disconnect();
       this.sessions.delete(client.id);
     });
