@@ -12,6 +12,10 @@ import { Request } from 'express';
 import { RedisService } from '../redis/redis.service';
 import { IS_PUBLIC_KEY } from '../common/decorators/public.decorator';
 
+/**
+ * Optional HTTP guard (not registered globally). Matches AuthMiddleware rules:
+ * JWT iss/aud/typ + Redis allowlist. Prefer middleware for proxied routes.
+ */
 @Injectable()
 export class AuthGuard implements CanActivate {
   private readonly logger = new Logger(AuthGuard.name);
@@ -40,15 +44,24 @@ export class AuthGuard implements CanActivate {
 
     try {
       const secret = this.configService.getOrThrow<string>('JWT_SECRET');
-      const payload = await this.jwtService.verifyAsync(token, { secret });
+      const issuer = this.configService.get<string>('JWT_ISSUER', 'play4cash-api');
+      const audience = this.configService.get<string>('JWT_AUDIENCE', 'play4cash-clients');
+      const payload = await this.jwtService.verifyAsync<Record<string, unknown>>(token, {
+        secret,
+        issuer,
+        audience,
+      });
+
+      if (payload.typ !== 'access') {
+        throw new UnauthorizedException('Invalid token type');
+      }
 
       const isValid = await this.redisService.isTokenValid(token);
       if (!isValid) {
         throw new UnauthorizedException('Token revoked or expired');
       }
 
-      // Attach payload to request for downstream use
-      (request as any).user = payload;
+      (request as Request & { user?: unknown }).user = payload;
       return true;
     } catch (error) {
       if (error instanceof UnauthorizedException) throw error;
@@ -63,8 +76,12 @@ export class AuthGuard implements CanActivate {
       return authHeader.slice(7);
     }
 
-    const token = request.query?.token as string | undefined;
-    if (token) return token;
+    const allowQuery =
+      this.configService.get<string>('ALLOW_HTTP_TOKEN_QUERY', 'false').toLowerCase() === 'true';
+    if (allowQuery) {
+      const token = request.query?.token as string | undefined;
+      if (token) return token;
+    }
 
     return null;
   }

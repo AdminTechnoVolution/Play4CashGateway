@@ -40,10 +40,20 @@ export class ProxyMiddleware implements NestMiddleware {
   }
 
   use(req: Request, res: Response, next: NextFunction): void {
+    const trustHeader =
+      this.configService.get<string>('GATEWAY_TRUST_HEADER_NAME') || 'x-gateway-internal';
+    const headerKey = trustHeader.toLowerCase();
+    const internalSecret = this.configService.get<string>('GATEWAY_INTERNAL_SECRET');
+    delete (req.headers as Record<string, unknown>)[headerKey];
+
     const user = (req as Request & { user?: unknown }).user;
     if (user) {
-      // Inyectado aquí: el proxy copia req.headers al proxyReq antes de asignar el socket
+      delete (req.headers as Record<string, unknown>)['x-gateway-user'];
       req.headers['x-gateway-user'] = JSON.stringify(user);
+    }
+    // Every proxied request (including public routes) gets the trust header so the API can reject spoofed x-gateway-user.
+    if (internalSecret) {
+      req.headers[headerKey] = internalSecret;
     }
     this.logger.debug(`Proxying ${req.method} ${req.url} → ${this.configService.get('DOWNSTREAM_URL')}`);
     this.proxy(req, res, next);

@@ -12,7 +12,7 @@ export class RedisService {
   async isTokenValid(token: string): Promise<boolean> {
     const prefix = this.configService.get<string>(
       'REDIS_TOKEN_PREFIX',
-      'accessToken:',
+      'accessTokens:',
     );
     const key = `${prefix}${token}`;
     const value = await this.client.get(key);

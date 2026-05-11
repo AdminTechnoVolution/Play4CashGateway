@@ -1,0 +1,56 @@
+---
+description: Workflow obligatorio del agente para cada petición (Gateway NestJS)
+alwaysApply: true
+---
+
+# Workflow del agente — Play4CashGateway
+
+Aplica este flujo en **cada petición**, sin excepción.
+
+## 1. Antes de tocar código — cargar contexto
+
+1. **Lee siempre** la regla compañera `auth-session.mdc` (esta carpeta) si la petición toca
+   autenticación, JWT, proxy HTTP, WS proxy, CORS, redis-keys o trust hacia la API.
+2. Skills: este repo no tiene skills propias. Si necesitas guía estructural sobre WS
+   gateways o nuevos módulos, mira las skills equivalentes en `Play4CashApi/.agents/skills/`
+   para mantener convenciones cruzadas, pero no las apliques al pie de la letra (este repo
+   es proxy, no fuente de verdad).
+3. Si la tarea tiene >2 pasos, crea un `TodoWrite`.
+
+## 2. Implementar
+
+- Respeta el contrato definido en `auth-session.mdc`: JWT con `iss/aud`, requerir
+  `typ === 'access'`, validar `accessTokens:` en Redis, paths públicos con match exacto,
+  inyectar `GATEWAY_INTERNAL_SECRET` en cada request proxiada.
+- **Cualquier cambio en JWT_ISSUER/AUDIENCE, REDIS_TOKEN_PREFIX, paths públicos o claims
+  esperados debe replicarse en `Play4CashApi`** o se rompe la cadena.
+- Logs estructurados sin bytes de token: `event=auth_failure reason=… method=… path=… ip=…`.
+
+## 3. Verificar antes de cerrar — obligatorio
+
+```bash
+npx tsc --noEmit
+npm run build
+```
+
+El hook `stop` (en `.cursor/hooks.json`) corre `tsc --noEmit` automáticamente. Si falla,
+**no cierres la respuesta** sin arreglarlo.
+
+## 4. Guardar memoria de los ajustes
+
+Al final de cada petición que modifique auth, proxy, redis o CORS:
+
+1. Actualiza `auth-session.mdc` si el cambio contradice o extiende lo escrito ahí.
+2. Si la decisión es trans-repo, replica en `docs/SECURITY-ENV.md` de los tres repos y en
+   `auth-session.mdc` de los repos afectados (PWA / API / Gateway).
+3. Si la decisión es nueva y no encaja, añade nueva regla `.cursor/rules/*.mdc`
+   (`alwaysApply: true`, <80 líneas, con ejemplos concretos).
+
+## 5. Patrones prohibidos universales
+
+- ❌ Commits sin pedirlo explícitamente.
+- ❌ Permitir refresh-typed tokens en HTTP o WS auth.
+- ❌ Logging del JWT (bytes o prefijo).
+- ❌ Paths públicos con `startsWith` (debe ser match exacto).
+- ❌ Crear archivos nuevos cuando puedes editar uno existente.
+- ❌ Saltar la sección 3 (Verificar).

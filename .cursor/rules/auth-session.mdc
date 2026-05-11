@@ -1,0 +1,69 @@
+---
+description: Play4Cash Gateway — auth proxy, JWT verification, WS bridging (post-hardening)
+alwaysApply: true
+---
+
+# Play4Cash Gateway — Session & Auth Contract
+
+This repo is the NestJS edge proxy that sits between the PWA and the Play4Cash API. The
+session architecture was hardened in a multi-repo sweep across `Play4CashPWA`,
+`Play4CashApi`, and `Play4CashGateway`. Keep these invariants.
+
+## What the Gateway must do
+
+1. Enforce CORS (`CORS_ORIGINS`). Refuse to start in `NODE_ENV=production` if
+   `CORS_ORIGINS` is empty (`src/main.ts`).
+2. Validate access tokens for non-public HTTP routes (`AuthMiddleware`) and for every
+   Socket.IO connection (`WsProxyGateway.bridge`).
+3. Forward requests to the API, injecting the trust header so the API can accept
+   `x-gateway-user` when we set it.
+
+## JWT validation (must match the API exactly)
+
+- Read `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE` from env. Verify with all three.
+- Require `payload.typ === 'access'`. Refresh tokens must NOT pass HTTP/WS auth at the
+  Gateway.
+- After JWT verification, also check `redisService.isTokenValid(token)` — this reads the
+  API-side allowlist using `REDIS_TOKEN_PREFIX` (default `accessTokens:`, must match the
+  API constant in `src/common/constants/redis-keys.constants.ts`).
+
+## Public paths
+
+- `AuthMiddleware` exact-matches against `DEFAULT_PUBLIC_PATHS` (overridable via
+  `PUBLIC_API_PATHS`). Keep this list in sync with `@Public()` decorators on the API.
+- No prefix matching, no trailing slashes — `normalizePath` strips a single trailing slash.
+
+## Tokens in URLs
+
+- HTTP: **token-in-query is disabled by default** (`ALLOW_HTTP_TOKEN_QUERY=false`). Don't
+  re-enable without justification — query strings end up in logs.
+- WebSocket: token-in-query **is allowed** because the browser cannot set `Authorization`
+  on the WS upgrade. `extractToken` in `ws-proxy.gateway.ts` accepts `auth.token`, `query.token`,
+  or `Authorization: Bearer …` (regex `/^Bearer\s+/i`).
+
+## Internal trust to the API
+
+- `src/proxy/proxy.middleware.ts` always injects `GATEWAY_INTERNAL_SECRET` into the
+  configured `GATEWAY_TRUST_HEADER_NAME` (default `x-gateway-internal`) for every proxied
+  request. The middleware strips any client-supplied value first.
+- The API verifies and removes this header. Don't propagate trust by IP unless the
+  API's `TRUSTED_GATEWAY_IPS` is configured.
+
+## Observability
+
+- Auth failures log structured lines without token bytes:
+  `event=auth_failure reason=… method=… path=… ip=…` (HTTP) and
+  `event=ws_rejected reason=… ns=… sid=… ip=…` (WS). Reasons:
+  `missing_token | wrong_typ | token_revoked | jwt_invalid`.
+
+## Forbidden patterns
+
+- ❌ Logging the JWT (bytes or prefix).
+- ❌ Verifying JWT without iss/aud/`typ`.
+- ❌ Letting refresh-typed tokens through HTTP or WS auth.
+- ❌ Re-implementing public-path logic with `startsWith` (must be exact match).
+- ❌ Disabling CORS validation in production.
+
+## Reference docs
+
+`docs/SECURITY-ENV.md` is the canonical cross-repo env matrix.

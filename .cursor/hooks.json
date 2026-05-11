@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "command": ".cursor/hooks/verify-typecheck.sh",
+        "timeout": 90,
+        "failClosed": false
+      }
+    ]
+  }
+}

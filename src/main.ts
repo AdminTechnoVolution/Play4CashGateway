@@ -43,10 +43,17 @@ async function bootstrap(): Promise<void> {
     .map((o) => o.trim())
     .filter(Boolean);
 
+  const nodeEnv = configService.get<string>('NODE_ENV', process.env.NODE_ENV || 'development');
+  if (nodeEnv === 'production' && corsOrigins.length === 0) {
+    throw new Error(
+      'Gateway: CORS_ORIGINS must list at least one origin when NODE_ENV=production (credentials are enabled).',
+    );
+  }
+
   app.enableCors({
     origin: corsOrigins.length > 0 ? corsOrigins : true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'accept-language'],
     credentials: true,
   });
 
