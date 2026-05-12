@@ -9,6 +9,7 @@ import {
 import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { Server, Socket } from 'socket.io';
 import { RedisService } from '../redis/redis.service';
+import { compareSemver } from '../common/semver-compare.util';
 
 const PROXY_NAMESPACES = [
   '/chat',
@@ -81,6 +82,12 @@ export class WsProxyGateway implements OnGatewayInit {
     if (!token) {
       this.recordWsFailure(namespace, client, 'missing_token');
       client.disconnect(true);
+      return;
+    }
+
+    // Version gate (only if PWA_MIN_VERSION is configured). Emits a custom event so the
+    // PWA can switch its modal into "forced update" mode before disconnecting.
+    if (!this.passesVersionGate(client, namespace)) {
       return;
     }
 
@@ -165,6 +172,25 @@ export class WsProxyGateway implements OnGatewayInit {
     });
   }
 
+  /**
+   * Returns true if no version gate is active OR the client's reported version is at or
+   * above `PWA_MIN_VERSION`. On rejection emits `version_mismatch` so the client can show
+   * a forced-update prompt, then disconnects after a short flush window.
+   */
+  private passesVersionGate(client: Socket, namespace: string): boolean {
+    const minVersion = (this.configService.get<string>('PWA_MIN_VERSION') || '').trim();
+    if (!minVersion) return true;
+
+    const reported = readClientVersion(client);
+    if (reported && compareSemver(reported, minVersion) >= 0) return true;
+
+    this.recordWsFailure(namespace, client, 'version_mismatch');
+    client.emit('version_mismatch', { requiredVersion: minVersion });
+    // 50 ms gives Socket.IO time to flush the event before the underlying transport closes.
+    setTimeout(() => client.disconnect(true), 50);
+    return false;
+  }
+
   /** Structured WS-auth rejection log (no token bytes). */
   private recordWsFailure(namespace: string, client: Socket, reason: string): void {
     const ip = (
@@ -176,4 +202,21 @@ export class WsProxyGateway implements OnGatewayInit {
       `event=ws_rejected reason=${reason} ns=${namespace} sid=${client.id} ip=${ip}`,
     );
   }
+}
+
+/**
+ * Pulls the PWA's reported version from the handshake. Order: auth payload, query string,
+ * header. Returns empty string when the client didn't supply one.
+ */
+function readClientVersion(client: Socket): string {
+  const auth = client.handshake.auth as Record<string, unknown> | undefined;
+  const query = client.handshake.query as Record<string, unknown> | undefined;
+  const headers = client.handshake.headers as Record<string, unknown> | undefined;
+  const headerValue = headers?.['x-app-version'];
+  const candidate =
+    (auth?.appVersion as string | undefined) ||
+    (query?.appVersion as string | undefined) ||
+    (Array.isArray(headerValue) ? headerValue[0] : (headerValue as string | undefined)) ||
+    '';
+  return String(candidate).trim();
 }

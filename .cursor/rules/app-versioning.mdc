@@ -1,0 +1,58 @@
+---
+description: Play4Cash Gateway — pass-through del contrato de versionado del PWA
+alwaysApply: true
+---
+
+# PWA Versioning Contract — gateway pass-through
+
+El Gateway es el origen que ve el browser, así que **CORS se evalúa acá**, no en el API.
+El contrato de versiones requiere que dos headers atraviesen el Gateway:
+
+| Header | Dirección | Quién lo emite | Quién lo lee |
+|--------|-----------|----------------|--------------|
+| `X-App-Version` | request → API | PWA (`ApiClient`) | API (`req.clientAppVersion`) |
+| `X-App-Min-Version` | response ← API | API (middleware `app-version-headers`) | PWA (`versionContract.checkAppMinVersion`) |
+
+## CORS — invariantes
+
+En `src/main.ts`:
+
+- `allowedHeaders` debe incluir `X-App-Version` (preflight). Sin esto, el browser
+  bloquea el request antes de salir.
+- `exposedHeaders` debe incluir `X-App-Min-Version`. Sin esto, el browser oculta el
+  header al JS del PWA y nunca dispara el modal forzado.
+- `credentials: true` se mantiene (refresh httpOnly cookie).
+
+## Proxy pass-through
+
+`http-proxy-middleware` no modifica headers de request ni de response por defecto. **No
+agregar transformadores que filtren o renombren headers**, o el contrato se rompe.
+
+`ProxyMiddleware.use` solo manipula `x-gateway-user` y el header de trust interno; el
+resto pasa intacto.
+
+## Forbidden patterns
+
+- ❌ Quitar `X-App-Version` de `allowedHeaders`.
+- ❌ Quitar `X-App-Min-Version` de `exposedHeaders`.
+- ❌ Agregar lógica que strip-ee headers de response del API antes de enviarlos al browser.
+- ❌ Loggear el header `X-App-Version` con datos del payload — sólo el valor.
+
+## WebSocket version gate
+
+`WsProxyGateway.passesVersionGate()` (en `src/ws-proxy/ws-proxy.gateway.ts`) corre antes
+de `bridge()` al backend. Si `PWA_MIN_VERSION` está seteada y el cliente reporta una
+versión menor (vía `auth.appVersion`, `query.appVersion` o header `X-App-Version`):
+
+1. Loggea `event=ws_rejected reason=version_mismatch`.
+2. Emite el evento `version_mismatch` al cliente con `{ requiredVersion }`.
+3. Espera 50 ms para que el evento se haga flush.
+4. Llama `client.disconnect(true)`.
+
+`PWA_MIN_VERSION` debe estar **idéntica** en API y Gateway. Si están desincronizadas:
+
+- Gateway alto / API bajo → la PWA recibe `version_mismatch` por WS pero los HTTP siguen
+  pasando. Confunde al usuario.
+- Gateway bajo / API alto → la PWA recibe modal forzado por HTTP pero el WS la deja entrar.
+
+Helper `compareSemver` en `src/common/semver-compare.util.ts` (espejo del API y de la PWA).

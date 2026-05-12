@@ -120,7 +120,35 @@ handshake URL because the browser cannot set `Authorization` on a WebSocket upgr
 | `VITE_DEV_PROXY_TARGET`   | Dev-only. When set, Vite proxies `/api` and `/socket.io` to that origin. |
 | `VITE_DEV_PROXY_INSECURE` | Dev-only. `true` to allow self-signed HTTPS targets. |
 
-## 9. Deployment checklist
+## 9. PWA versioning contract
+
+Both ends agree on a semver published by the SPA. The API can force a hard reload when it
+ships a breaking change.
+
+| Variable          | PWA | Gateway | API | Notes |
+|-------------------|-----|---------|-----|-------|
+| `PWA_MIN_VERSION` | —   | —       | ✅   | semver, e.g. `1.2.0`. Empty disables forced upgrades. The API ships it as `X-App-Min-Version` on every response. |
+
+Two headers cross the wire on every API call:
+
+- `X-App-Version` — sent by the PWA on every request. API stashes it on
+  `req.clientAppVersion` for logs/metrics. Built from `__APP_VERSION__` (semver of
+  `package.json` injected at build by `vite.config.ts`).
+- `X-App-Min-Version` — sent by the API on every response when `PWA_MIN_VERSION` is set.
+  PWA reads it via `versionContract.checkAppMinVersion` and dispatches the forced-update modal.
+
+**CORS responsibility splits as follows** (the Gateway is the origin the browser sees):
+
+| Concern | Where | Setting |
+|---------|-------|---------|
+| Allow `X-App-Version` on preflight | Gateway | `allowedHeaders: [..., 'X-App-Version']` |
+| Expose `X-App-Min-Version` to JS | Gateway **and** API | `exposedHeaders: ['X-App-Min-Version']` |
+| Pass headers through unchanged | Gateway | `http-proxy-middleware` defaults — do not add filters |
+
+If you ever introduce a custom proxy that rewrites response headers, re-add the contract or
+the forced-update flow silently breaks.
+
+## 10. Deployment checklist
 
 1. Generate a strong `JWT_SECRET` and an opaque `GATEWAY_INTERNAL_SECRET` (32+ random bytes).
 2. Set identical `JWT_*`, `GATEWAY_INTERNAL_SECRET`, `GATEWAY_TRUST_HEADER_NAME` on Gateway
@@ -131,3 +159,5 @@ handshake URL because the browser cannot set `Authorization` on a WebSocket upgr
 5. PWA `VITE_API_URL` points to the Gateway, not the API directly.
 6. In production: `AUTH_REFRESH_COOKIE_SECURE=true`, `AUTH_REFRESH_COOKIE_SAMESITE=lax` (or
    `none` if cross-site), `NODE_ENV=production`.
+7. Bump `PWA_MIN_VERSION` only when the new build is **not** backward compatible with older
+   PWA bundles. Otherwise leave it as-is and let the SW prompt flow handle the rollout.
