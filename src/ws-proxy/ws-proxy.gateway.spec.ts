@@ -1,6 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { WsProxyGateway } from './ws-proxy.gateway';
+import { PROXY_NAMESPACES, WsProxyGateway } from './ws-proxy.gateway';
 import type { RedisService } from '../redis/redis.service';
 
 /**
@@ -89,5 +89,15 @@ describe('WsProxyGateway version gate', () => {
 
     expect(gw.passesVersionGate(client, '/chess')).toBe(false);
     expect(client.emit).toHaveBeenCalledWith('version_mismatch', { requiredVersion: '1.0.0' });
+  });
+});
+
+describe('WsProxyGateway namespace registry', () => {
+  it('proxies every game namespace served by the API (regression: /uno was missing)', () => {
+    // If you add a new gateway in the API, also add it here. Catches the silent failure
+    // mode where a new game is unreachable from the PWA because the gateway drops it.
+    expect(PROXY_NAMESPACES).toEqual(
+      expect.arrayContaining(['/chat', '/rooms', '/naval-battle', '/chess', '/domino', '/halma', '/uno']),
+    );
   });
 });
