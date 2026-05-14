@@ -130,9 +130,20 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
   async revalidateActiveSessions(): Promise<void> {
     for (const [, entry] of this.sessions) {
       try {
-        const valid = await this.validateActiveToken(entry.token);
-        if (valid) continue;
-        this.recordWsFailure(entry.namespace, entry.client, 'token_expired_sweep');
+        const result = await this.validateActiveToken(entry.token);
+        if (result.valid) continue;
+        // Granular logging so production can tell whether the kick is caused by
+        // JWT exp/signature drift (e.g. PWA holding an old short-TTL token) or by
+        // the access token not being present in the Redis allowlist (e.g. Redis
+        // restarted, key mismatch between API and Gateway, or `JWT_ACCESS_TOKEN_TTL_SECS`
+        // expired the allowlist entry before the JWT `exp` claim).
+        this.recordWsFailure(
+          entry.namespace,
+          entry.client,
+          `token_expired_sweep cause=${result.reason} jti=${result.jti ?? 'unknown'}`,
+        );
+        // Keep the wire-level `reason` stable so the PWA's listener contract doesn't
+        // change. Operators see the granular cause via the server log above.
         entry.client.emit('auth_expired', { reason: 'token_invalid' });
         // 50 ms gives Socket.IO time to flush the event over polling before we tear
         // the transport down (same trick we use for `version_mismatch`).
@@ -147,36 +158,44 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
 
   /**
    * Re-runs both auth gates (JWT signature/expiration + Redis allowlist). Returns
-   * true only when both still pass. Any exception is treated as "no longer valid"
-   * so a transient Redis outage during a sweep simply skips the disconnect (we don't
-   * want to kick everyone off because Redis blipped).
+   * a structured result so callers (and ops logs) can tell the two failure modes
+   * apart. Any exception is treated as "no longer valid" except a Redis outage,
+   * which keeps the session and waits for the next sweep.
    */
-  private async validateActiveToken(token: string): Promise<boolean> {
+  private async validateActiveToken(
+    token: string,
+  ): Promise<{ valid: boolean; reason: string; jti?: string }> {
     const secret = this.configService.getOrThrow<string>('JWT_SECRET');
     const issuer = this.configService.get<string>('JWT_ISSUER', 'play4cash-api');
     const audience = this.configService.get<string>('JWT_AUDIENCE', 'play4cash-clients');
+    let payload: Record<string, unknown>;
     try {
-      const payload = await this.jwtService.verifyAsync<Record<string, unknown>>(
-        token,
-        { secret, issuer, audience },
-      );
-      if (payload?.typ !== 'access') return false;
-    } catch {
-      // Either expired or signature failure → must rotate.
-      return false;
+      payload = await this.jwtService.verifyAsync<Record<string, unknown>>(token, {
+        secret,
+        issuer,
+        audience,
+      });
+    } catch (err) {
+      const msg = (err as Error).message || '';
+      const reason = msg.includes('expired') ? 'jwt_expired' : 'jwt_invalid';
+      return { valid: false, reason };
     }
+    if (payload?.typ !== 'access') {
+      return { valid: false, reason: 'wrong_typ', jti: payload?.jti as string | undefined };
+    }
+    const jti = typeof payload.jti === 'string' ? payload.jti : undefined;
     try {
       const ok = await this.redisService.isTokenValid(token);
-      if (!ok) return false;
+      if (!ok) return { valid: false, reason: 'not_in_allowlist', jti };
     } catch (err) {
       // Conservative: a Redis hiccup should not flood the PWA with reconnects.
       // Log and treat as valid for this tick; the next sweep will retry.
       this.logger.warn(
         `Revalidacion: Redis no disponible, conservando sesion. err=${(err as Error).message}`,
       );
-      return true;
+      return { valid: true, reason: 'redis_down_skipped', jti };
     }
-    return true;
+    return { valid: true, reason: 'ok', jti };
   }
 
   private async bridge(
