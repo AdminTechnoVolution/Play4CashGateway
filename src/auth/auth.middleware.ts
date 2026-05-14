@@ -9,7 +9,7 @@ import { RedisService } from '../redis/redis.service';
  * Must stay aligned with @Public() on the downstream API.
  */
 const DEFAULT_PUBLIC_PATHS =
-  '/api/login,/api/login/refresh,/api/login/invalidate-browser-session,/api/user/register,/api/user/verify-code,/api/rooms/stats';
+  '/api/login,/api/login/refresh,/api/login/invalidate-browser-session,/api/user/register,/api/user/verify-code,/api/user/public/stats,/api/rooms/stats';
 
 @Injectable()
 export class AuthMiddleware implements NestMiddleware {

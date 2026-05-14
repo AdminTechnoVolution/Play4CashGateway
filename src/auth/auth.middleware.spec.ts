@@ -70,6 +70,39 @@ function makeRedis(valid: boolean): RedisService {
 }
 
 describe('AuthMiddleware (Gateway)', () => {
+  it('skips auth for /api/user/public/stats when PUBLIC_API_PATHS falls back to code defaults', async () => {
+    const config = {
+      get: <T>(k: string, def?: T) =>
+        k === 'JWT_SECRET'
+          ? (SECRET as T)
+          : k === 'JWT_ISSUER'
+            ? (ISSUER as T)
+            : k === 'JWT_AUDIENCE'
+              ? (AUDIENCE as T)
+              : k === 'ALLOW_HTTP_TOKEN_QUERY'
+                ? ('false' as T)
+                : k === 'PUBLIC_API_PATHS'
+                  ? (def as T)
+                  : def,
+      getOrThrow: <T>(k: string) => {
+        if (k === 'JWT_SECRET') return SECRET as T;
+        throw new Error(`unexpected ${k}`);
+      },
+    } as ConfigService;
+    const mw = new AuthMiddleware(makeJwt(), makeRedis(false), config);
+    const next = jest.fn() as NextFunction;
+    const res = makeRes();
+
+    await mw.use(
+      makeReq({ path: '/api/user/public/stats' }),
+      res as unknown as import('express').Response,
+      next,
+    );
+
+    expect(next).toHaveBeenCalled();
+    expect(res._status).toBe(0);
+  });
+
   it('skips auth for whitelisted public paths', async () => {
     const mw = new AuthMiddleware(makeJwt(), makeRedis(false), makeConfig());
     const next = jest.fn() as NextFunction;
