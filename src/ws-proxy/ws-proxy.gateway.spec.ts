@@ -1,7 +1,8 @@
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { PROXY_NAMESPACES, WsProxyGateway } from './ws-proxy.gateway';
+import { PROXY_NAMESPACES, WsProxyGateway, buildUpstreamHandshake } from './ws-proxy.gateway';
 import type { RedisService } from '../redis/redis.service';
+import type { Socket } from 'socket.io';
 
 /**
  * `passesVersionGate` and `readClientVersion` are private. We exercise them via the public
@@ -99,5 +100,56 @@ describe('WsProxyGateway namespace registry', () => {
     expect(PROXY_NAMESPACES).toEqual(
       expect.arrayContaining(['/chat', '/rooms', '/naval-battle', '/chess', '/domino', '/halma', '/uno']),
     );
+  });
+});
+
+function makeHandshakeSocket(partial: {
+  auth?: Record<string, unknown>;
+  query?: Record<string, unknown>;
+  headers?: Record<string, unknown>;
+}): Socket {
+  return {
+    handshake: {
+      auth: partial.auth ?? {},
+      query: partial.query ?? {},
+      headers: partial.headers ?? {},
+    },
+  } as Socket;
+}
+
+describe('buildUpstreamHandshake', () => {
+  it('copies token and forwards allowed lang + appVersion on auth and query', () => {
+    const client = makeHandshakeSocket({
+      auth: { lang: 'es', appVersion: '1.2.3' },
+      query: { foo: 'bar' },
+    });
+    const { auth, query } = buildUpstreamHandshake(client, 'jwt-token');
+    expect(auth).toEqual({ token: 'jwt-token', lang: 'es', appVersion: '1.2.3' });
+    expect(query).toEqual({ token: 'jwt-token', lang: 'es', appVersion: '1.2.3' });
+  });
+
+  it('reads lang from query when auth omits it', () => {
+    const client = makeHandshakeSocket({
+      query: { lang: 'fr', token: 'ignored-here' },
+    });
+    const { auth } = buildUpstreamHandshake(client, 't');
+    expect(auth.lang).toBe('fr');
+  });
+
+  it('ignores unsupported lang values', () => {
+    const client = makeHandshakeSocket({
+      auth: { lang: 'xx' },
+    });
+    const { auth } = buildUpstreamHandshake(client, 't');
+    expect(auth.lang).toBeUndefined();
+    expect(auth.token).toBe('t');
+  });
+
+  it('reads appVersion from X-App-Version header when absent from auth/query', () => {
+    const client = makeHandshakeSocket({
+      headers: { 'x-app-version': '2.0.0' },
+    });
+    const { query } = buildUpstreamHandshake(client, 't');
+    expect(query.appVersion).toBe('2.0.0');
   });
 });

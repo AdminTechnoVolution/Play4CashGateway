@@ -256,13 +256,18 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
 
     this.logger.log(`[${namespace}] Cliente conectado: ${client.id}`);
 
+    // Mirror locale + app version on the upstream handshake so the API gateways can run
+    // `getLang()` / version logic (e.g. `/chat` greetings). Previously only `token` was sent,
+    // so every proxied socket looked like `lang=en` on the API side.
+    const { auth: upstreamAuth, query: upstreamQuery } = buildUpstreamHandshake(client, token);
+
     // Phase D: enable upstream reconnection so a brief API pod restart or transport
     // flap no longer requires the PWA to manually reconnect. socket.io client v4
     // retries forever by default; we cap attempts so a permanently-down API surfaces
     // as a clean error to the client instead of hanging in pending state.
     const backendSocket = ioClient(`${downstreamUrl}${namespace}`, {
-      auth: { token },
-      query: { token },
+      auth: upstreamAuth,
+      query: upstreamQuery,
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: 5,
@@ -432,4 +437,46 @@ function readClientVersion(client: Socket): string {
     (Array.isArray(headerValue) ? headerValue[0] : (headerValue as string | undefined)) ||
     '';
   return String(candidate).trim();
+}
+
+const UPSTREAM_LANG_ALLOWED = new Set(['es', 'en', 'fr', 'de', 'it', 'pt']);
+
+function handshakeString(
+  auth: Record<string, unknown> | undefined,
+  query: Record<string, unknown> | undefined,
+  key: string,
+): string {
+  const raw = auth?.[key] ?? query?.[key];
+  if (raw == null) return '';
+  const s = Array.isArray(raw) ? String(raw[0]) : String(raw);
+  return s.trim();
+}
+
+/**
+ * Handshake fields the browser sends to the Gateway must be replayed to the API Socket.IO
+ * server; otherwise namespaces like `/chat` cannot localize greetings per player.
+ */
+export function buildUpstreamHandshake(
+  client: Socket,
+  token: string,
+): { auth: Record<string, string>; query: Record<string, string> } {
+  const authHs = client.handshake.auth as Record<string, unknown> | undefined;
+  const queryHs = client.handshake.query as Record<string, unknown> | undefined;
+
+  const upstreamAuth: Record<string, string> = { token };
+  const upstreamQuery: Record<string, string> = { token };
+
+  const langRaw = handshakeString(authHs, queryHs, 'lang').toLowerCase();
+  if (langRaw && UPSTREAM_LANG_ALLOWED.has(langRaw)) {
+    upstreamAuth.lang = langRaw;
+    upstreamQuery.lang = langRaw;
+  }
+
+  const appVersion = readClientVersion(client);
+  if (appVersion) {
+    upstreamAuth.appVersion = appVersion;
+    upstreamQuery.appVersion = appVersion;
+  }
+
+  return { auth: upstreamAuth, query: upstreamQuery };
 }

@@ -50,6 +50,10 @@ versión menor (vía `auth.appVersion`, `query.appVersion` o header `X-App-Versi
 3. Espera 50 ms para que el evento se haga flush.
 4. Llama `client.disconnect(true)`.
 
+### Handshake upstream al API
+
+El bridge abre `socket.io-client` hacia el API y debe reenviar en **`auth` y `query`** no solo `token`, sino también **`lang`** (tags permitidos: `es`, `en`, `fr`, `de`, `it`, `pt`) y **`appVersion`** cuando el cliente los envía — igual que en el handshake browser→Gateway. Si `lang` no llega al API, namespaces como `/chat` caen en inglés por defecto.
+
 `PWA_MIN_VERSION` debe estar **idéntica** en API y Gateway. Si están desincronizadas:
 
 - Gateway alto / API bajo → la PWA recibe `version_mismatch` por WS pero los HTTP siguen
