@@ -17,8 +17,9 @@ El contrato de versiones requiere que dos headers atraviesen el Gateway:
 
 En `src/main.ts`:
 
-- `allowedHeaders` debe incluir `X-App-Version` (preflight). Sin esto, el browser
-  bloquea el request antes de salir.
+- `allowedHeaders` debe incluir `X-App-Version` y `Idempotency-Key` (preflight). Sin
+ esto, el browser bloquea el request antes de salir (`POST /api/rooms` envía
+ idempotencia).
 - `exposedHeaders` debe incluir `X-App-Min-Version`. Sin esto, el browser oculta el
   header al JS del PWA y nunca dispara el modal forzado.
 - `credentials: true` se mantiene (refresh httpOnly cookie).
@@ -33,7 +34,7 @@ resto pasa intacto.
 
 ## Forbidden patterns
 
-- ❌ Quitar `X-App-Version` de `allowedHeaders`.
+- ❌ Quitar `X-App-Version` o `Idempotency-Key` de `allowedHeaders`.
 - ❌ Quitar `X-App-Min-Version` de `exposedHeaders`.
 - ❌ Agregar lógica que strip-ee headers de response del API antes de enviarlos al browser.
 - ❌ Loggear el header `X-App-Version` con datos del payload — sólo el valor.

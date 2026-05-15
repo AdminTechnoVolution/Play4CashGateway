@@ -54,7 +54,14 @@ async function bootstrap(): Promise<void> {
     origin: corsOrigins.length > 0 ? corsOrigins : true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     // Includes X-App-Version so the PWA can publish its running build to every API call.
-    allowedHeaders: ['Content-Type', 'Authorization', 'accept-language', 'X-App-Version'],
+    // Idempotency-Key: POST /api/rooms (create room) — required or browsers block preflight.
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'accept-language',
+      'X-App-Version',
+      'Idempotency-Key',
+    ],
     // Exposes X-App-Min-Version so the PWA can read it (browsers hide non-simple response
     // headers from JS unless explicitly exposed). Drives the forced-update modal.
     exposedHeaders: ['X-App-Min-Version'],

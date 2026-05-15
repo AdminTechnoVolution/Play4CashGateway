@@ -142,6 +142,7 @@ Two headers cross the wire on every API call:
 | Concern | Where | Setting |
 |---------|-------|---------|
 | Allow `X-App-Version` on preflight | Gateway | `allowedHeaders: [..., 'X-App-Version']` |
+| Allow `Idempotency-Key` on preflight | Gateway | Same — PWA sends it on `POST /api/rooms` |
 | Expose `X-App-Min-Version` to JS | Gateway **and** API | `exposedHeaders: ['X-App-Min-Version']` |
 | Pass headers through unchanged | Gateway | `http-proxy-middleware` defaults — do not add filters |
 

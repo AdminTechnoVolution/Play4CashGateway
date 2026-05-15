@@ -30,7 +30,13 @@ describe('Gateway CORS contract (e2e)', () => {
     app.enableCors({
       origin: ['https://example.test'],
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowedHeaders: ['Content-Type', 'Authorization', 'accept-language', 'X-App-Version'],
+      allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'accept-language',
+        'X-App-Version',
+        'Idempotency-Key',
+      ],
       exposedHeaders: ['X-App-Min-Version'],
       credentials: true,
     });
@@ -63,6 +69,22 @@ describe('Gateway CORS contract (e2e)', () => {
     const allowed = (res.headers['access-control-allow-headers'] || '').toLowerCase();
     expect(allowed).toContain('x-app-version');
     expect(allowed).toContain('authorization');
+    expect(res.headers['access-control-allow-credentials']).toBe('true');
+  });
+
+  it('allows Idempotency-Key on preflight OPTIONS (POST /api/rooms)', async () => {
+    const res = await request(app.getHttpServer() as Server)
+      .options('/echo')
+      .set('Origin', 'https://example.test')
+      .set('Access-Control-Request-Method', 'POST')
+      .set(
+        'Access-Control-Request-Headers',
+        'Content-Type,Authorization,X-App-Version,Idempotency-Key',
+      );
+
+    expect([200, 204]).toContain(res.status);
+    const allowed = (res.headers['access-control-allow-headers'] || '').toLowerCase();
+    expect(allowed).toContain('idempotency-key');
     expect(res.headers['access-control-allow-credentials']).toBe('true');
   });
 
