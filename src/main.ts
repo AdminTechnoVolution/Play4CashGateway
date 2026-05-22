@@ -75,7 +75,9 @@ async function bootstrap(): Promise<void> {
   logger.log(`API Gateway corriendo en puerto ${port}`);
   logger.log(`Seguridad activada (Helmet + Rate Limiting)`);
   logger.log(`REST proxy → ${downstreamUrl}`);
-  logger.log(`WS proxy  → ${downstreamUrl} (namespaces: /chat /rooms /naval-battle /chess /domino /halma)`);
+  logger.log(
+    `WS proxy  → ${downstreamUrl} (namespaces: /chat /rooms /naval-battle /chess /domino /halma /uno /connect-four)`,
+  );
 }
 
 bootstrap();

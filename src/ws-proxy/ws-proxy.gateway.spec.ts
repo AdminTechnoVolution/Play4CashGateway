@@ -94,11 +94,20 @@ describe('WsProxyGateway version gate', () => {
 });
 
 describe('WsProxyGateway namespace registry', () => {
-  it('proxies every game namespace served by the API (regression: /uno was missing)', () => {
+  it('proxies every game namespace served by the API (regression: new games must be listed)', () => {
     // If you add a new gateway in the API, also add it here. Catches the silent failure
     // mode where a new game is unreachable from the PWA because the gateway drops it.
     expect(PROXY_NAMESPACES).toEqual(
-      expect.arrayContaining(['/chat', '/rooms', '/naval-battle', '/chess', '/domino', '/halma', '/uno']),
+      expect.arrayContaining([
+        '/chat',
+        '/rooms',
+        '/naval-battle',
+        '/chess',
+        '/domino',
+        '/halma',
+        '/uno',
+        '/connect-four',
+      ]),
     );
   });
 });
