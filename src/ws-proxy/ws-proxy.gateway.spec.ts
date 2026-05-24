@@ -107,6 +107,7 @@ describe('WsProxyGateway namespace registry', () => {
         '/halma',
         '/uno',
         '/connect-four',
+        '/tournaments',
       ]),
     );
   });

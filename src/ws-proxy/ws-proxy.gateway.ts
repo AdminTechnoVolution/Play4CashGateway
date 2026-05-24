@@ -33,6 +33,7 @@ export const PROXY_NAMESPACES = [
   '/halma',
   '/uno',
   '/connect-four',
+  '/tournaments',
 ] as const;
 
 function buildWsCors(): { origin: boolean | string[]; credentials: boolean } {
