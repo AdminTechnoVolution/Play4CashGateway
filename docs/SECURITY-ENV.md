@@ -162,3 +162,12 @@ the forced-update flow silently breaks.
    `none` if cross-site), `NODE_ENV=production`.
 7. Bump `PWA_MIN_VERSION` only when the new build is **not** backward compatible with older
    PWA bundles. Otherwise leave it as-is and let the SW prompt flow handle the rollout.
+
+## 11. WebSocket stability
+
+See Play4CashPWA `docs/SECURITY-ENV.md` §11. Gateway-specific:
+
+- Upstream `socket.io-client` uses **infinite** reconnect attempts (matches PWA).
+- Replays `join`, `subscribe`, and `tournament:join` after upstream reconnect → emits `proxy_reconnected`.
+- Engine.IO ping aligned: `pingInterval=25000`, `pingTimeout=20000`.
+- Azure: enable WebSockets + ARR Affinity; idle timeout ≥ 240s until Redis adapter removes sticky requirement.
