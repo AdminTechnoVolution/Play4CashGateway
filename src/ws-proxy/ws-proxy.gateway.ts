@@ -10,6 +10,7 @@ import { io as ioClient, Socket as ClientSocket } from 'socket.io-client';
 import { Server, Socket } from 'socket.io';
 import { RedisService } from '../redis/redis.service';
 import { compareSemver } from '../common/semver-compare.util';
+import { SOCKET_IO_PING_OPTIONS } from '../common/socket-io-options';
 
 /**
  * Phase E: a per-connection record. We keep the PWA-side socket, the upstream socket,
@@ -50,6 +51,7 @@ function buildWsCors(): { origin: boolean | string[]; credentials: boolean } {
 @WebSocketGateway({
   cors: buildWsCors(),
   transports: ['websocket', 'polling'],
+  ...SOCKET_IO_PING_OPTIONS,
 })
 export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
   @WebSocketServer() private readonly io!: Server;
@@ -263,20 +265,19 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     // so every proxied socket looked like `lang=en` on the API side.
     const { auth: upstreamAuth, query: upstreamQuery } = buildUpstreamHandshake(client, token);
 
-    // Phase D: enable upstream reconnection so a brief API pod restart or transport
-    // flap no longer requires the PWA to manually reconnect. socket.io client v4
-    // retries forever by default; we cap attempts so a permanently-down API surfaces
-    // as a clean error to the client instead of hanging in pending state.
+    // Phase D: upstream reconnection mirrors PWA (infinite attempts) so brief API
+    // flaps recover without killing the browser session.
     const backendSocket = ioClient(`${downstreamUrl}${namespace}`, {
       auth: upstreamAuth,
       query: upstreamQuery,
       transports: ['websocket', 'polling'],
       reconnection: true,
-      reconnectionAttempts: 5,
+      reconnectionAttempts: Infinity,
       reconnectionDelay: 500,
       reconnectionDelayMax: 5000,
       randomizationFactor: 0.5,
-      timeout: 5000,
+      timeout: SOCKET_IO_PING_OPTIONS.connectTimeout,
+      ...SOCKET_IO_PING_OPTIONS,
     });
 
     // Phase E: store enough context for the revalidation sweeper to call back into
@@ -289,11 +290,9 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     });
 
     const pendingEvents: { event: string; args: unknown[] }[] = [];
-    // Phase D: re-bridge memory. After a successful reconnect to the API, the
-    // downstream Socket.IO server sees a brand-new `client.id` and has no record
-    // of the room/subscription this proxied client previously joined. We remember
-    // the last `join`/`subscribe` event so we can replay it after `reconnect` and
-    // keep the PWA from silently going stale.
+    // Cache rejoin payloads so we can replay them after a backend reconnect.
+    // Games/chat: `join`; lobby: `subscribe`; tournaments: `tournament:join`.
+    const REPLAY_EVENTS = new Set(['join', 'subscribe', 'tournament:join']);
     let lastJoin: { event: string; args: unknown[] } | null = null;
 
     const replayLastJoin = (): void => {
@@ -349,27 +348,15 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       client.emit('proxy_reconnected', { namespace });
     };
 
-    const onReconnectFailed = (): void => {
-      this.logger.error(
-        `[${namespace}] Reconexion al backend agotada para ${client.id}; cerrando cliente.`,
-      );
-      pendingEvents.length = 0;
-      client.emit('exception', { message: 'Backend no disponible' });
-      client.disconnect(true);
-    };
-
     manager.on('reconnect_attempt', onReconnectAttempt);
     manager.on('reconnect', onReconnect);
-    manager.on('reconnect_failed', onReconnectFailed);
 
     backendSocket.onAny((event: string, ...args: unknown[]) => {
       client.emit(event, ...args);
     });
 
     client.onAny((event: string, ...args: unknown[]) => {
-      // Cache rejoin payloads so we can replay them after a backend reconnect.
-      // The API gateways expose `join` (games + chat) and `subscribe` (lobby).
-      if (event === 'join' || event === 'subscribe') {
+      if (REPLAY_EVENTS.has(event)) {
         lastJoin = { event, args };
       }
       if (backendSocket.connected) {
@@ -386,7 +373,6 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       pendingEvents.length = 0;
       manager.off('reconnect_attempt', onReconnectAttempt);
       manager.off('reconnect', onReconnect);
-      manager.off('reconnect_failed', onReconnectFailed);
       backendSocket.disconnect();
       this.sessions.delete(client.id);
     });

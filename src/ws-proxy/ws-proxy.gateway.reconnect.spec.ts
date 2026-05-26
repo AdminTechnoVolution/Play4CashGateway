@@ -137,7 +137,7 @@ describe('WsProxyGateway upstream reconnection (Phase D)', () => {
     lastIoClientCall.args = [];
   });
 
-  it('creates the upstream socket with bounded reconnection options', async () => {
+  it('creates the upstream socket with infinite reconnection options', async () => {
     const gw = new WsProxyGateway(makeConfigService(), makeJwt(), makeRedis());
     const client = makeClient();
 
@@ -145,11 +145,11 @@ describe('WsProxyGateway upstream reconnection (Phase D)', () => {
 
     expect(lastIoClientCall.args[1]).toMatchObject({
       reconnection: true,
-      reconnectionAttempts: 5,
+      reconnectionAttempts: Infinity,
     });
     expect(lastBackendSocket?.io.on).toHaveBeenCalledWith('reconnect_attempt', expect.any(Function));
     expect(lastBackendSocket?.io.on).toHaveBeenCalledWith('reconnect', expect.any(Function));
-    expect(lastBackendSocket?.io.on).toHaveBeenCalledWith('reconnect_failed', expect.any(Function));
+    expect(lastBackendSocket?.io.on).not.toHaveBeenCalledWith('reconnect_failed', expect.any(Function));
   });
 
   it('replays the last join event when the upstream reconnects', async () => {
@@ -200,15 +200,27 @@ describe('WsProxyGateway upstream reconnection (Phase D)', () => {
     expect(lastBackendSocket!.emit).toHaveBeenCalledWith('subscribe', { game_id: 'g-1' });
   });
 
-  it('emits exception and disconnects when reconnect attempts are exhausted', async () => {
+  it('replays tournament:join after upstream reconnect', async () => {
+    const gw = new WsProxyGateway(makeConfigService(), makeJwt(), makeRedis());
+    const client = makeClient();
+    await (gw as any).bridge(client, '/tournaments', 'http://upstream');
+
+    lastBackendSocket!.connected = true;
+    client.__fire('__onAny', 'tournament:join', { tournament_id: 't-1' });
+
+    lastBackendSocket!.emit.mockClear();
+    lastBackendSocket!.__fireManager('reconnect', 1);
+
+    expect(lastBackendSocket!.emit).toHaveBeenCalledWith('tournament:join', { tournament_id: 't-1' });
+  });
+
+  it('does not disconnect PWA when upstream keeps retrying (no reconnect_failed hook)', async () => {
     const gw = new WsProxyGateway(makeConfigService(), makeJwt(), makeRedis());
     const client = makeClient();
     await (gw as any).bridge(client, '/uno', 'http://upstream');
 
-    lastBackendSocket!.__fireManager('reconnect_failed');
-
-    expect(client.emit).toHaveBeenCalledWith('exception', { message: 'Backend no disponible' });
-    expect(client.disconnect).toHaveBeenCalledWith(true);
+    expect(lastBackendSocket!.io.on).not.toHaveBeenCalledWith('reconnect_failed', expect.any(Function));
+    expect(client.disconnect).not.toHaveBeenCalled();
   });
 
   it('removes manager listeners when the PWA client disconnects', async () => {
@@ -220,7 +232,6 @@ describe('WsProxyGateway upstream reconnection (Phase D)', () => {
 
     expect(lastBackendSocket!.io.off).toHaveBeenCalledWith('reconnect_attempt', expect.any(Function));
     expect(lastBackendSocket!.io.off).toHaveBeenCalledWith('reconnect', expect.any(Function));
-    expect(lastBackendSocket!.io.off).toHaveBeenCalledWith('reconnect_failed', expect.any(Function));
     expect(lastBackendSocket!.disconnect).toHaveBeenCalled();
   });
 });
