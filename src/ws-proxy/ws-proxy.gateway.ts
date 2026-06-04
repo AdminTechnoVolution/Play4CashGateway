@@ -11,6 +11,16 @@ import { Server, Socket } from 'socket.io';
 import { RedisService } from '../redis/redis.service';
 import { compareSemver } from '../common/semver-compare.util';
 import { SOCKET_IO_PING_OPTIONS } from '../common/socket-io-options';
+import {
+  buildResultEnvelope,
+  extractPlayerId,
+  extractRoomIdFromJoinArgs,
+  extractRoomIdFromRoomDeletedArgs,
+  gameEventNameForNamespace,
+  isGameNamespace,
+  isIntentionalClientDisconnect,
+  isTerminalGameEnvelope,
+} from './ws-proxy-downstream.util';
 
 /**
  * Phase E: a per-connection record. We keep the PWA-side socket, the upstream socket,
@@ -23,6 +33,26 @@ interface SessionEntry {
   backendSocket: ClientSocket;
   token: string;
   namespace: string;
+  playerId: string;
+}
+
+interface ParkedSession {
+  backendSocket: ClientSocket;
+  namespace: string;
+  token: string;
+  playerId: string;
+  lastJoin: { event: string; args: unknown[] } | null;
+  pendingEvents: { event: string; args: unknown[] }[];
+  disconnectTimer: NodeJS.Timeout;
+  onReconnectAttempt: (attempt: number) => void;
+  onReconnect: (attempt: number) => void;
+}
+
+interface UserTrack {
+  clientsByNamespace: Map<string, Socket>;
+  lastRoomIdByNamespace: Map<string, string>;
+  pendingRoomDeletes: { roomId?: string; args: unknown[] }[];
+  resultEmittedRoomIds: Set<string>;
 }
 
 export const PROXY_NAMESPACES = [
@@ -59,6 +89,10 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
 
   /** key=PWA-side client.id → live session record (Phase E). */
   private readonly sessions = new Map<string, SessionEntry>();
+  /** key=`${namespace}:${playerId}` → upstream kept alive for PWA transport reconnect (Bug A). */
+  private readonly parkedSessions = new Map<string, ParkedSession>();
+  /** key=playerId → cross-namespace lobby/game-end ordering (Bug B). */
+  private readonly userTracks = new Map<string, UserTrack>();
   /** Handle for the periodic token revalidation sweeper so we can clear it on shutdown. */
   private revalidationTimer: NodeJS.Timeout | null = null;
 
@@ -82,35 +116,21 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       `WsProxyGateway iniciado → proxiando namespaces: ${PROXY_NAMESPACES.join(', ')}`,
     );
 
-    // Phase E: periodically revalidate every active session's JWT against the Redis
-    // allowlist. Without this, a stolen/revoked access token would stay usable for
-    // the entire socket lifetime (which can be hours during a long match).
     this.startTokenRevalidationSweeper();
   }
 
-  /**
-   * NestJS module destroy hook — stops the revalidation timer so hot-reload / shutdown
-   * doesn't leave background work running.
-   */
   onModuleDestroy(): void {
     if (this.revalidationTimer) {
       clearInterval(this.revalidationTimer);
       this.revalidationTimer = null;
     }
+    for (const parked of this.parkedSessions.values()) {
+      clearTimeout(parked.disconnectTimer);
+      parked.backendSocket.disconnect();
+    }
+    this.parkedSessions.clear();
   }
 
-  /**
-   * Phase E: sweeper that fires every `WS_TOKEN_REVALIDATE_MS` (default 5 min) and
-   * runs each active session through {@link validateActiveToken}. Any session whose
-   * token has expired or been revoked is notified with `auth_expired` and then
-   * disconnected so the PWA can refresh + reconnect cleanly.
-   *
-   * Implementation notes:
-   *  - We intentionally use `setInterval` rather than `@nestjs/schedule` to avoid
-   *    pulling a new dependency into a Gateway that has no other Cron jobs.
-   *  - Each tick is fenced inside try/catch so a single bad token never poisons the
-   *    rest of the sweep.
-   */
   private startTokenRevalidationSweeper(): void {
     const periodMsRaw = Number(
       this.configService.get<string>('WS_TOKEN_REVALIDATE_MS') ?? '300000',
@@ -119,38 +139,24 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       Number.isFinite(periodMsRaw) && periodMsRaw >= 30_000
         ? periodMsRaw
         : 300_000;
-    // Skip when explicitly disabled (set to 0). Helps E2E tests that don't want a
-    // background interval keeping the process alive.
     if (periodMs === 0) return;
     this.revalidationTimer = setInterval(() => {
       void this.revalidateActiveSessions();
     }, periodMs);
-    // `unref()` keeps the timer from blocking process exit when it's the only handle
-    // still pending (Node's natural shutdown behaviour stays intact).
     this.revalidationTimer.unref?.();
   }
 
-  /** Public for tests; the production path is the interval started in `afterInit`. */
   async revalidateActiveSessions(): Promise<void> {
     for (const [, entry] of this.sessions) {
       try {
         const result = await this.validateActiveToken(entry.token);
         if (result.valid) continue;
-        // Granular logging so production can tell whether the kick is caused by
-        // JWT exp/signature drift (e.g. PWA holding an old short-TTL token) or by
-        // the access token not being present in the Redis allowlist (e.g. Redis
-        // restarted, key mismatch between API and Gateway, or `JWT_ACCESS_TOKEN_TTL_SECS`
-        // expired the allowlist entry before the JWT `exp` claim).
         this.recordWsFailure(
           entry.namespace,
           entry.client,
           `token_expired_sweep cause=${result.reason} jti=${result.jti ?? 'unknown'}`,
         );
-        // Keep the wire-level `reason` stable so the PWA's listener contract doesn't
-        // change. Operators see the granular cause via the server log above.
         entry.client.emit('auth_expired', { reason: 'token_invalid' });
-        // 50 ms gives Socket.IO time to flush the event over polling before we tear
-        // the transport down (same trick we use for `version_mismatch`).
         setTimeout(() => entry.client.disconnect(true), 50);
       } catch (err) {
         this.logger.warn(
@@ -160,12 +166,6 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     }
   }
 
-  /**
-   * Re-runs both auth gates (JWT signature/expiration + Redis allowlist). Returns
-   * a structured result so callers (and ops logs) can tell the two failure modes
-   * apart. Any exception is treated as "no longer valid" except a Redis outage,
-   * which keeps the session and waits for the next sweep.
-   */
   private async validateActiveToken(
     token: string,
   ): Promise<{ valid: boolean; reason: string; jti?: string }> {
@@ -192,14 +192,48 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       const ok = await this.redisService.isTokenValid(token);
       if (!ok) return { valid: false, reason: 'not_in_allowlist', jti };
     } catch (err) {
-      // Conservative: a Redis hiccup should not flood the PWA with reconnects.
-      // Log and treat as valid for this tick; the next sweep will retry.
       this.logger.warn(
         `Revalidacion: Redis no disponible, conservando sesion. err=${(err as Error).message}`,
       );
       return { valid: true, reason: 'redis_down_skipped', jti };
     }
     return { valid: true, reason: 'ok', jti };
+  }
+
+  private parkKey(namespace: string, playerId: string): string {
+    return `${namespace}:${playerId}`;
+  }
+
+  private getUserTrack(playerId: string): UserTrack {
+    let track = this.userTracks.get(playerId);
+    if (!track) {
+      track = {
+        clientsByNamespace: new Map(),
+        lastRoomIdByNamespace: new Map(),
+        pendingRoomDeletes: [],
+        resultEmittedRoomIds: new Set(),
+      };
+      this.userTracks.set(playerId, track);
+    }
+    return track;
+  }
+
+  private registerClientNamespace(playerId: string, namespace: string, client: Socket): void {
+    this.getUserTrack(playerId).clientsByNamespace.set(namespace, client);
+  }
+
+  private unregisterClientNamespace(playerId: string, namespace: string): void {
+    const track = this.userTracks.get(playerId);
+    if (!track) return;
+    track.clientsByNamespace.delete(namespace);
+    if (track.clientsByNamespace.size === 0) {
+      this.userTracks.delete(playerId);
+    }
+  }
+
+  private readParkGraceMs(): number {
+    const raw = Number(this.configService.get<string>('WS_PARK_GRACE_MS') ?? '90000');
+    return Number.isFinite(raw) && raw >= 5_000 ? raw : 90_000;
   }
 
   private async bridge(
@@ -225,12 +259,11 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       return;
     }
 
-    // Version gate (only if PWA_MIN_VERSION is configured). Emits a custom event so the
-    // PWA can switch its modal into "forced update" mode before disconnecting.
     if (!this.passesVersionGate(client, namespace)) {
       return;
     }
 
+    let playerId = '';
     try {
       const secret = this.configService.getOrThrow<string>('JWT_SECRET');
       const issuer = this.configService.get<string>('JWT_ISSUER', 'play4cash-api');
@@ -245,6 +278,7 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
         client.disconnect(true);
         return;
       }
+      playerId = extractPlayerId(payload);
     } catch {
       this.recordWsFailure(namespace, client, 'jwt_invalid');
       client.disconnect(true);
@@ -259,14 +293,26 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     }
 
     this.logger.log(`[${namespace}] Cliente conectado: ${client.id}`);
+    this.registerClientNamespace(playerId, namespace, client);
 
-    // Mirror locale + app version on the upstream handshake so the API gateways can run
-    // `getLang()` / version logic (e.g. `/chat` greetings). Previously only `token` was sent,
-    // so every proxied socket looked like `lang=en` on the API side.
+    const key = this.parkKey(namespace, playerId);
+    const parked = isGameNamespace(namespace) ? this.parkedSessions.get(key) : undefined;
+    if (parked) {
+      clearTimeout(parked.disconnectTimer);
+      this.parkedSessions.delete(key);
+      this.logger.log(
+        `[${namespace}] Reanudando sesion upstream estacionada para jugador ${playerId}`,
+      );
+      this.wireSession(client, namespace, token, playerId, parked.backendSocket, {
+        lastJoin: parked.lastJoin,
+        pendingEvents: parked.pendingEvents,
+      });
+      client.emit('proxy_reconnected', { namespace, resumed: true });
+      return;
+    }
+
     const { auth: upstreamAuth, query: upstreamQuery } = buildUpstreamHandshake(client, token);
 
-    // Phase D: upstream reconnection mirrors PWA (infinite attempts) so brief API
-    // flaps recover without killing the browser session.
     const backendSocket = ioClient(`${downstreamUrl}${namespace}`, {
       auth: upstreamAuth,
       query: upstreamQuery,
@@ -280,20 +326,31 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       ...SOCKET_IO_PING_OPTIONS,
     });
 
-    // Phase E: store enough context for the revalidation sweeper to call back into
-    // this session without having to crack open socket.io internals.
+    this.wireSession(client, namespace, token, playerId, backendSocket);
+  }
+
+  private wireSession(
+    client: Socket,
+    namespace: string,
+    token: string,
+    playerId: string,
+    backendSocket: ClientSocket,
+    resume?: {
+      lastJoin: { event: string; args: unknown[] } | null;
+      pendingEvents: { event: string; args: unknown[] }[];
+    },
+  ): void {
     this.sessions.set(client.id, {
       client,
       backendSocket,
       token,
       namespace,
+      playerId,
     });
 
-    const pendingEvents: { event: string; args: unknown[] }[] = [];
-    // Cache rejoin payloads so we can replay them after a backend reconnect.
-    // Games/chat: `join`; lobby: `subscribe`; tournaments: `tournament:join`.
+    const pendingEvents = resume?.pendingEvents ?? [];
     const REPLAY_EVENTS = new Set(['join', 'subscribe', 'tournament:join']);
-    let lastJoin: { event: string; args: unknown[] } | null = null;
+    let lastJoin: { event: string; args: unknown[] } | null = resume?.lastJoin ?? null;
 
     const replayLastJoin = (): void => {
       if (!lastJoin) return;
@@ -314,6 +371,19 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
         backendSocket.emit(event, ...args);
       }
       pendingEvents.length = 0;
+
+      if (namespace === '/rooms' && playerId) {
+        const track = this.getUserTrack(playerId);
+        const remaining: typeof track.pendingRoomDeletes = [];
+        for (const pending of track.pendingRoomDeletes) {
+          if (!pending.roomId || track.resultEmittedRoomIds.has(pending.roomId)) {
+            client.emit('roomDeleted', ...pending.args);
+          } else {
+            remaining.push(pending);
+          }
+        }
+        track.pendingRoomDeletes = remaining;
+      }
     });
 
     backendSocket.on('connect_error', (err) => {
@@ -322,8 +392,6 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       );
     });
 
-    // Phase D: the Manager dispatches reconnect events through `.io`. Persist the
-    // reference up front so we can clean listeners on teardown.
     const manager = backendSocket.io;
 
     const onReconnectAttempt = (attempt: number): void => {
@@ -336,15 +404,11 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       this.logger.log(
         `[${namespace}] Backend reconectado para ${client.id} tras ${attempt} intento(s); replay del ultimo join.`,
       );
-      // Flush anything the client queued while the upstream was bouncing, then
-      // re-issue the original join/subscribe so the API re-binds the new socket id
-      // to the player's room/subscription.
       replayLastJoin();
       for (const { event, args } of pendingEvents) {
         backendSocket.emit(event, ...args);
       }
       pendingEvents.length = 0;
-      // Inform the PWA so it can decide whether to refetch lobby state.
       client.emit('proxy_reconnected', { namespace });
     };
 
@@ -352,12 +416,16 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     manager.on('reconnect', onReconnect);
 
     backendSocket.onAny((event: string, ...args: unknown[]) => {
-      client.emit(event, ...args);
+      this.forwardDownstream(client, namespace, playerId, event, args);
     });
 
     client.onAny((event: string, ...args: unknown[]) => {
       if (REPLAY_EVENTS.has(event)) {
         lastJoin = { event, args };
+        const roomId = extractRoomIdFromJoinArgs(args);
+        if (roomId) {
+          this.getUserTrack(playerId).lastRoomIdByNamespace.set(namespace, roomId);
+        }
       }
       if (backendSocket.connected) {
         backendSocket.emit(event, ...args);
@@ -367,22 +435,113 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     });
 
     client.once('disconnect', (reason: string) => {
+      this.unregisterClientNamespace(playerId, namespace);
       this.logger.log(
-        `[${namespace}] Cliente ${client.id} desconectado (${reason}) → cerrando socket backend`,
+        `[${namespace}] Cliente ${client.id} desconectado (${reason})`,
       );
       pendingEvents.length = 0;
+      this.sessions.delete(client.id);
+
+      const shouldPark =
+        isGameNamespace(namespace) &&
+        playerId &&
+        !isIntentionalClientDisconnect(reason);
+
+      if (shouldPark) {
+        const graceMs = this.readParkGraceMs();
+        const parkKey = this.parkKey(namespace, playerId);
+        const disconnectTimer = setTimeout(() => {
+          this.logger.log(
+            `[${namespace}] Grace expirada para jugador ${playerId} → cerrando socket backend`,
+          );
+          this.parkedSessions.delete(parkKey);
+          backendSocket.disconnect();
+        }, graceMs);
+        disconnectTimer.unref?.();
+        this.parkedSessions.set(parkKey, {
+          backendSocket,
+          namespace,
+          token,
+          playerId,
+          lastJoin,
+          pendingEvents: [],
+          disconnectTimer,
+          onReconnectAttempt,
+          onReconnect,
+        });
+        this.logger.log(
+          `[${namespace}] Sesion estacionada ${graceMs}ms (API mantiene sala; rejoin permitido)`,
+        );
+        return;
+      }
+
       manager.off('reconnect_attempt', onReconnectAttempt);
       manager.off('reconnect', onReconnect);
+      this.logger.log(
+        `[${namespace}] Cerrando socket backend para cliente ${client.id}`,
+      );
+      const parkKey = this.parkKey(namespace, playerId);
+      const existing = this.parkedSessions.get(parkKey);
+      if (existing) {
+        clearTimeout(existing.disconnectTimer);
+        this.parkedSessions.delete(parkKey);
+      }
       backendSocket.disconnect();
-      this.sessions.delete(client.id);
     });
   }
 
   /**
-   * Returns true if no version gate is active OR the client's reported version is at or
-   * above `PWA_MIN_VERSION`. On rejection emits `version_mismatch` so the client can show
-   * a forced-update prompt, then disconnects after a short flush window.
+   * Bug B: emit `result` (roomCloseReason=gameFinished) before the raw game payload and
+   * defer lobby `roomDeleted` until after that result for the same room id.
    */
+  forwardDownstream(
+    client: Socket,
+    namespace: string,
+    playerId: string,
+    event: string,
+    args: unknown[],
+  ): void {
+    if (event === 'roomDeleted') {
+      const roomId = extractRoomIdFromRoomDeletedArgs(args);
+      const track = this.getUserTrack(playerId);
+      if (roomId && track.resultEmittedRoomIds.has(roomId)) {
+        client.emit(event, ...args);
+        return;
+      }
+      track.pendingRoomDeletes.push({ roomId, args });
+      return;
+    }
+
+    const isGameEvent =
+      isGameNamespace(namespace) && event === gameEventNameForNamespace(namespace);
+    if (isGameEvent && isTerminalGameEnvelope(args)) {
+      const track = this.getUserTrack(playerId);
+      const roomId = track.lastRoomIdByNamespace.get(namespace);
+
+      client.emit('result', buildResultEnvelope(args));
+      client.emit(event, ...args);
+
+      if (roomId) {
+        track.resultEmittedRoomIds.add(roomId);
+        const lobbyClient = track.clientsByNamespace.get('/rooms');
+        if (lobbyClient) {
+          const remaining: typeof track.pendingRoomDeletes = [];
+          for (const pending of track.pendingRoomDeletes) {
+            if (pending.roomId === roomId) {
+              lobbyClient.emit('roomDeleted', ...pending.args);
+            } else {
+              remaining.push(pending);
+            }
+          }
+          track.pendingRoomDeletes = remaining;
+        }
+      }
+      return;
+    }
+
+    client.emit(event, ...args);
+  }
+
   private passesVersionGate(client: Socket, namespace: string): boolean {
     const minVersion = (this.configService.get<string>('PWA_MIN_VERSION') || '').trim();
     if (!minVersion) return true;
@@ -392,12 +551,10 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
 
     this.recordWsFailure(namespace, client, 'version_mismatch');
     client.emit('version_mismatch', { requiredVersion: minVersion });
-    // 50 ms gives Socket.IO time to flush the event before the underlying transport closes.
     setTimeout(() => client.disconnect(true), 50);
     return false;
   }
 
-  /** Structured WS-auth rejection log (no token bytes). */
   private recordWsFailure(namespace: string, client: Socket, reason: string): void {
     const ip = (
       client.handshake?.address ||
@@ -410,10 +567,6 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
   }
 }
 
-/**
- * Pulls the PWA's reported version from the handshake. Order: auth payload, query string,
- * header. Returns empty string when the client didn't supply one.
- */
 function readClientVersion(client: Socket): string {
   const auth = client.handshake.auth as Record<string, unknown> | undefined;
   const query = client.handshake.query as Record<string, unknown> | undefined;
@@ -440,10 +593,6 @@ function handshakeString(
   return s.trim();
 }
 
-/**
- * Handshake fields the browser sends to the Gateway must be replayed to the API Socket.IO
- * server; otherwise namespaces like `/chat` cannot localize greetings per player.
- */
 export function buildUpstreamHandshake(
   client: Socket,
   token: string,
