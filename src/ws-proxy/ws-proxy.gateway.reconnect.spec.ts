@@ -123,7 +123,7 @@ function makeConfigService(): ConfigService {
 
 function makeJwt(): JwtService {
   return {
-    verifyAsync: jest.fn().mockResolvedValue({ typ: 'access' }),
+    verifyAsync: jest.fn().mockResolvedValue({ typ: 'access', id: 'player-test' }),
   } as unknown as JwtService;
 }
 
@@ -223,12 +223,24 @@ describe('WsProxyGateway upstream reconnection (Phase D)', () => {
     expect(client.disconnect).not.toHaveBeenCalled();
   });
 
-  it('removes manager listeners when the PWA client disconnects', async () => {
+  it('parks upstream socket on transport disconnect (Bug A) instead of immediate teardown', async () => {
     const gw = new WsProxyGateway(makeConfigService(), makeJwt(), makeRedis());
     const client = makeClient();
     await (gw as any).bridge(client, '/uno', 'http://upstream');
 
     client.__fire('disconnect', 'transport close');
+
+    expect(lastBackendSocket!.io.off).not.toHaveBeenCalled();
+    expect(lastBackendSocket!.disconnect).not.toHaveBeenCalled();
+    expect((gw as any).parkedSessions.size).toBe(1);
+  });
+
+  it('tears down upstream on intentional PWA disconnect', async () => {
+    const gw = new WsProxyGateway(makeConfigService(), makeJwt(), makeRedis());
+    const client = makeClient();
+    await (gw as any).bridge(client, '/uno', 'http://upstream');
+
+    client.__fire('disconnect', 'io client disconnect');
 
     expect(lastBackendSocket!.io.off).toHaveBeenCalledWith('reconnect_attempt', expect.any(Function));
     expect(lastBackendSocket!.io.off).toHaveBeenCalledWith('reconnect', expect.any(Function));
