@@ -3,8 +3,12 @@ import { AppModule } from './app.module';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
-import { rateLimit } from 'express-rate-limit';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import type Redis from 'ioredis';
+import {
+  createGatewayRateLimitMiddleware,
+  resolveGatewayRateLimitConfig,
+} from './common/rate-limit/gateway-rate-limit';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
@@ -14,26 +18,23 @@ async function bootstrap(): Promise<void> {
     bodyParser: false,
   });
   const configService = app.get(ConfigService);
+  const redisClient = app.get<Redis>('REDIS_CLIENT');
+  const rateLimitConfig = resolveGatewayRateLimitConfig(
+    configService.get<unknown>('RATE_LIMIT_WINDOW_MS'),
+    configService.get<unknown>('RATE_LIMIT_MAX'),
+  );
 
   // Configuración de Seguridad (Helmet)
+  app.set('trust proxy', 1);
   app.use(helmet());
 
   // Configuración de Rate Limiting
-  const limiter = rateLimit({
-    windowMs: Number(configService.get<number>('RATE_LIMIT_WINDOW_MS', 60000)),
-    max: Number(configService.get<number>('RATE_LIMIT_MAX', 100)),
-    standardHeaders: true, // Retorna cabeceras RateLimit-*
-    legacyHeaders: false, // Deshabilita cabeceras X-RateLimit-* antiguas
-    message: {
-      statusCode: 429,
-      message: 'Demasiadas peticiones. Por favor, intenta de nuevo más tarde.',
-    },
+  const limiter = createGatewayRateLimitMiddleware({
+    redis: redisClient,
+    windowMs: rateLimitConfig.windowMs,
+    max: rateLimitConfig.max,
   });
   app.use(limiter);
-
-  // Confiar en el proxy (necesario si hay un Load Balancer/Ingress como Nginx adelante)
-  // para que express-rate-limit detecte correctamente la IP del cliente.
-  app.set('trust proxy', 1);
 
   const port = configService.get<number>('PORT', 4000);
   const downstreamUrl = configService.getOrThrow<string>('DOWNSTREAM_URL');
@@ -81,5 +82,4 @@ async function bootstrap(): Promise<void> {
 }
 
 bootstrap();
-
 
