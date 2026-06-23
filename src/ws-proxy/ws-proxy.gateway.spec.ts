@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { ConnectFourEdgeGateway } from './connect-four-edge.gateway';
 import { PROXY_NAMESPACES, WsProxyGateway, buildUpstreamHandshake } from './ws-proxy.gateway';
 import type { RedisService } from '../redis/redis.service';
 import type { Socket } from 'socket.io';
@@ -94,9 +95,7 @@ describe('WsProxyGateway version gate', () => {
 });
 
 describe('WsProxyGateway namespace registry', () => {
-  it('proxies every game namespace served by the API (regression: new games must be listed)', () => {
-    // If you add a new gateway in the API, also add it here. Catches the silent failure
-    // mode where a new game is unreachable from the PWA because the gateway drops it.
+  it('proxies legacy namespaces that still use the downstream Socket.IO bridge', () => {
     expect(PROXY_NAMESPACES).toEqual(
       expect.arrayContaining([
         '/chat',
@@ -106,10 +105,14 @@ describe('WsProxyGateway namespace registry', () => {
         '/domino',
         '/halma',
         '/uno',
-        '/connect-four',
         '/tournaments',
       ]),
     );
+  });
+
+  it('keeps connect-four out of the downstream bridge because it has a Redis Streams edge', () => {
+    expect(PROXY_NAMESPACES).not.toContain('/connect-four');
+    expect(ConnectFourEdgeGateway).toBeDefined();
   });
 });
 
