@@ -4,6 +4,8 @@ import { JwtService } from '@nestjs/jwt';
 import { Request, Response, NextFunction } from 'express';
 import { RedisService } from '../redis/redis.service';
 
+const ACCESS_COOKIE_NAME = 'p4c_access';
+
 /**
  * Comma-separated paths (exact match, no querystring) that skip JWT at the gateway.
  * Must stay aligned with @Public() on the downstream API.
@@ -67,10 +69,6 @@ export class AuthMiddleware implements NestMiddleware {
     }
   }
 
-  /**
-   * Structured log line for observability dashboards (Loki/CloudWatch/Datadog).
-   * Never logs token bytes; only the failure reason and request shape.
-   */
   private recordAuthFailure(req: Request, reason: string): void {
     const ip = (req.ip || req.socket?.remoteAddress || 'unknown').toString();
     this.logger.warn(
@@ -97,6 +95,9 @@ export class AuthMiddleware implements NestMiddleware {
   }
 
   private extractToken(req: Request): string | null {
+    const cookieToken = readCookie(req.headers.cookie, ACCESS_COOKIE_NAME);
+    if (cookieToken) return cookieToken;
+
     const authHeader = req.headers['authorization'];
     if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7);
 
@@ -109,4 +110,16 @@ export class AuthMiddleware implements NestMiddleware {
 
     return null;
   }
+}
+
+function readCookie(cookieHeader: string | undefined, name: string): string | undefined {
+  if (!cookieHeader) return undefined;
+  for (const part of cookieHeader.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    if (key !== name) continue;
+    return decodeURIComponent(part.slice(idx + 1).trim());
+  }
+  return undefined;
 }

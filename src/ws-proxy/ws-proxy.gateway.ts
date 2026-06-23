@@ -246,8 +246,10 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     const authHeader = client.handshake.headers?.authorization as
       | string
       | undefined;
+    const cookieToken = readCookie(client.handshake.headers?.cookie as string | undefined, 'p4c_access');
 
     const token =
+      cookieToken ||
       auth?.token ||
       query?.token ||
       authHeader?.replace(/^Bearer\s+/i, '') ||
@@ -616,4 +618,16 @@ export function buildUpstreamHandshake(
   }
 
   return { auth: upstreamAuth, query: upstreamQuery };
+}
+
+function readCookie(cookieHeader: string | undefined, name: string): string | undefined {
+  if (!cookieHeader) return undefined;
+  for (const part of cookieHeader.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    if (key !== name) continue;
+    return decodeURIComponent(part.slice(idx + 1).trim());
+  }
+  return undefined;
 }

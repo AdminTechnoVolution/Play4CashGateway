@@ -12,10 +12,8 @@ import { Request } from 'express';
 import { RedisService } from '../redis/redis.service';
 import { IS_PUBLIC_KEY } from '../common/decorators/public.decorator';
 
-/**
- * Optional HTTP guard (not registered globally). Matches AuthMiddleware rules:
- * JWT iss/aud/typ + Redis allowlist. Prefer middleware for proxied routes.
- */
+const ACCESS_COOKIE_NAME = 'p4c_access';
+
 @Injectable()
 export class AuthGuard implements CanActivate {
   private readonly logger = new Logger(AuthGuard.name);
@@ -71,6 +69,9 @@ export class AuthGuard implements CanActivate {
   }
 
   private extractTokenFromRequest(request: Request): string | null {
+    const cookieToken = readCookie(request.headers.cookie, ACCESS_COOKIE_NAME);
+    if (cookieToken) return cookieToken;
+
     const authHeader = request.headers['authorization'];
     if (authHeader?.startsWith('Bearer ')) {
       return authHeader.slice(7);
@@ -85,4 +86,16 @@ export class AuthGuard implements CanActivate {
 
     return null;
   }
+}
+
+function readCookie(cookieHeader: string | undefined, name: string): string | undefined {
+  if (!cookieHeader) return undefined;
+  for (const part of cookieHeader.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx === -1) continue;
+    const key = part.slice(0, idx).trim();
+    if (key !== name) continue;
+    return decodeURIComponent(part.slice(idx + 1).trim());
+  }
+  return undefined;
 }
