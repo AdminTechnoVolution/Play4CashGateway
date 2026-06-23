@@ -114,6 +114,23 @@ describe('AuthMiddleware (Gateway)', () => {
     expect(res._status).toBe(0);
   });
 
+
+  it('accepts a valid token from the access cookie', async () => {
+    const mw = new AuthMiddleware(makeJwt(), makeRedis(true), makeConfig());
+    const res = makeRes();
+    const next = jest.fn();
+    const token = 'cookie.jwt.token';
+
+    await mw.use(
+      makeReq({ headers: { cookie: `p4c_access=${token}` } }),
+      res as unknown as import('express').Response,
+      next,
+    );
+
+    expect(next).toHaveBeenCalled();
+    expect(res._status).toBe(0);
+  });
+
   it('returns 401 when no token is provided', async () => {
     const mw = new AuthMiddleware(makeJwt(), makeRedis(true), makeConfig());
     const res = makeRes();
