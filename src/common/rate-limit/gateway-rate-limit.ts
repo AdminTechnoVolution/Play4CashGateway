@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import type { RequestHandler } from 'express';
 import {
   ipKeyGenerator,
@@ -50,6 +51,7 @@ export function createGatewayRateLimitMiddleware(options: GatewayRateLimitMiddle
 class RedisRateLimitStore implements Store {
   public readonly localKeys = false;
   public readonly prefix = STORE_PREFIX;
+  private readonly logger = new Logger('GatewayRateLimitStore');
 
   private windowMs = DEFAULT_WINDOW_MS;
 
@@ -61,6 +63,7 @@ class RedisRateLimitStore implements Store {
 
   async increment(key: string): Promise<ClientRateLimitInfo> {
     const redisKey = `${this.prefix}${key}`;
+    const startedAt = process.hrtime.bigint();
     try {
       const result = (await this.redis.eval(
         `
@@ -82,6 +85,7 @@ class RedisRateLimitStore implements Store {
 
       const totalHits = parsePositiveInt(result?.[0], FAIL_CLOSED_HITS);
       const ttlMs = parsePositiveInt(result?.[1], this.windowMs);
+      this.logSlowEval('increment', redisKey, startedAt);
       return {
         totalHits,
         resetTime: new Date(Date.now() + ttlMs),
@@ -97,10 +101,12 @@ class RedisRateLimitStore implements Store {
 
   async decrement(key: string): Promise<void> {
     const redisKey = `${this.prefix}${key}`;
+    const startedAt = process.hrtime.bigint();
     try {
       const current = parsePositiveInt(await this.redis.get(redisKey), 0);
       if (current <= 1) {
         await this.redis.del(redisKey);
+        this.logSlowEval('decrement', redisKey, startedAt);
         return;
       }
 
@@ -111,6 +117,7 @@ class RedisRateLimitStore implements Store {
       } else {
         await this.redis.set(redisKey, nextValue, 'PX', this.windowMs);
       }
+      this.logSlowEval('decrement', redisKey, startedAt);
     } catch (error) {
       console.error('[GatewayRateLimitStore] Redis decrement failed', error);
     }
@@ -135,6 +142,22 @@ class RedisRateLimitStore implements Store {
 
   async shutdown(): Promise<void> {
     return;
+  }
+
+  private logSlowEval(operation: string, key: string, startedAt: bigint): void {
+    const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    const thresholdMs = this.getSlowRateLimitThresholdMs();
+    if (elapsedMs < thresholdMs) return;
+    this.logger.warn(
+      `event=rate_limit_slow op=${operation} key=${key} duration_ms=${elapsedMs.toFixed(1)}`,
+    );
+  }
+
+  private getSlowRateLimitThresholdMs(): number {
+    const raw = process.env.GATEWAY_RATE_LIMIT_SLOW_MS ?? '20';
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) return 20;
+    return parsed;
   }
 }
 

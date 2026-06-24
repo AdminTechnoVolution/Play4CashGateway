@@ -3,6 +3,7 @@ import { AppModule } from './app.module';
 import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import helmet from 'helmet';
+import type { NextFunction, Request, Response } from 'express';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type Redis from 'ioredis';
 import {
@@ -27,6 +28,21 @@ async function bootstrap(): Promise<void> {
   // Configuración de Seguridad (Helmet)
   app.set('trust proxy', 1);
   app.use(helmet());
+
+  const slowHttpMs = resolveSlowHttpThreshold(
+    configService.get<string>('GATEWAY_HTTP_SLOW_MS'),
+  );
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const startedAt = process.hrtime.bigint();
+    res.on('finish', () => {
+      const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+      if (elapsedMs < slowHttpMs) return;
+      logger.warn(
+        `event=http_slow method=${req.method} path=${req.originalUrl || req.url} status=${res.statusCode} duration_ms=${elapsedMs.toFixed(1)}`,
+      );
+    });
+    next();
+  });
 
   // Configuración de Rate Limiting
   const limiter = createGatewayRateLimitMiddleware({
@@ -81,5 +97,10 @@ async function bootstrap(): Promise<void> {
   );
 }
 
-bootstrap();
+function resolveSlowHttpThreshold(raw: string | undefined): number {
+  const parsed = Number(raw ?? '250');
+  if (!Number.isFinite(parsed) || parsed < 0) return 250;
+  return parsed;
+}
 
+bootstrap();

@@ -16,6 +16,7 @@ const DEFAULT_PUBLIC_PATHS =
 @Injectable()
 export class AuthMiddleware implements NestMiddleware {
   private readonly logger = new Logger(AuthMiddleware.name);
+  private publicPathSet: Set<string> | null = null;
 
   constructor(
     private readonly jwtService: JwtService,
@@ -24,9 +25,11 @@ export class AuthMiddleware implements NestMiddleware {
   ) {}
 
   async use(req: Request, res: Response, next: NextFunction): Promise<void> {
+    const startedAt = process.hrtime.bigint();
     const path = this.normalizePath(req.path.split('?')[0]);
 
     if (this.isPublicPath(path)) {
+      this.logSlowAuth(req, path, startedAt, 'public_skip');
       return next();
     }
 
@@ -35,6 +38,7 @@ export class AuthMiddleware implements NestMiddleware {
     if (!token) {
       this.recordAuthFailure(req, 'missing_token');
       res.status(401).json({ statusCode: 401, message: 'No token provided' });
+      this.logSlowAuth(req, path, startedAt, 'missing_token');
       return;
     }
 
@@ -51,6 +55,7 @@ export class AuthMiddleware implements NestMiddleware {
       if (payload.typ !== 'access') {
         this.recordAuthFailure(req, 'wrong_typ');
         res.status(401).json({ statusCode: 401, message: 'Invalid token type' });
+        this.logSlowAuth(req, path, startedAt, 'wrong_typ');
         return;
       }
 
@@ -58,14 +63,17 @@ export class AuthMiddleware implements NestMiddleware {
       if (!isValid) {
         this.recordAuthFailure(req, 'token_revoked');
         res.status(401).json({ statusCode: 401, message: 'Token revoked or expired' });
+        this.logSlowAuth(req, path, startedAt, 'token_revoked');
         return;
       }
 
       (req as Request & { user?: unknown }).user = payload;
+      this.logSlowAuth(req, path, startedAt, 'ok');
       next();
     } catch {
       this.recordAuthFailure(req, 'jwt_invalid');
       res.status(401).json({ statusCode: 401, message: 'Invalid token' });
+      this.logSlowAuth(req, path, startedAt, 'jwt_invalid');
     }
   }
 
@@ -84,14 +92,17 @@ export class AuthMiddleware implements NestMiddleware {
   }
 
   private isPublicPath(path: string): boolean {
-    const raw = this.configService.get<string>('PUBLIC_API_PATHS', DEFAULT_PUBLIC_PATHS);
-    const set = new Set(
-      raw
-        .split(',')
-        .map((s) => this.normalizePath(s.trim()))
-        .filter(Boolean),
-    );
-    return set.has(path);
+    if (!this.publicPathSet) {
+      const raw = this.configService.get<string>('PUBLIC_API_PATHS', DEFAULT_PUBLIC_PATHS);
+      this.publicPathSet = new Set(
+        raw
+          .split(',')
+          .map((s) => this.normalizePath(s.trim()))
+          .filter(Boolean),
+      );
+    }
+
+    return this.publicPathSet.has(path);
   }
 
   private extractToken(req: Request): string | null {
@@ -109,6 +120,23 @@ export class AuthMiddleware implements NestMiddleware {
     }
 
     return null;
+  }
+
+  private logSlowAuth(req: Request, path: string, startedAt: bigint, outcome: string): void {
+    const thresholdMs = this.getSlowAuthThresholdMs();
+    const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    if (elapsedMs < thresholdMs) return;
+
+    this.logger.warn(
+      `event=auth_slow outcome=${outcome} method=${req.method} path=${path} duration_ms=${elapsedMs.toFixed(1)}`,
+    );
+  }
+
+  private getSlowAuthThresholdMs(): number {
+    const raw = this.configService.get<string>('GATEWAY_AUTH_SLOW_MS', '25');
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) return 25;
+    return parsed;
   }
 }
 
