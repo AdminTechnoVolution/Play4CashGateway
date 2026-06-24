@@ -40,6 +40,7 @@ export class ProxyMiddleware implements NestMiddleware {
   }
 
   use(req: Request, res: Response, next: NextFunction): void {
+    const startedAt = process.hrtime.bigint();
     const trustHeader =
       this.configService.get<string>('GATEWAY_TRUST_HEADER_NAME') || 'x-gateway-internal';
     const headerKey = trustHeader.toLowerCase();
@@ -55,7 +56,24 @@ export class ProxyMiddleware implements NestMiddleware {
     if (internalSecret) {
       req.headers[headerKey] = internalSecret;
     }
+
+    const thresholdMs = this.getSlowProxyThresholdMs();
+    res.on('finish', () => {
+      const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+      if (elapsedMs < thresholdMs) return;
+      this.logger.warn(
+        `event=proxy_slow method=${req.method} path=${req.originalUrl || req.url} status=${res.statusCode} duration_ms=${elapsedMs.toFixed(1)} target=${this.configService.get('DOWNSTREAM_URL')}`,
+      );
+    });
+
     this.logger.debug(`Proxying ${req.method} ${req.url} → ${this.configService.get('DOWNSTREAM_URL')}`);
     this.proxy(req, res, next);
+  }
+
+  private getSlowProxyThresholdMs(): number {
+    const raw = this.configService.get<string>('GATEWAY_PROXY_SLOW_MS', '100');
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed) || parsed < 0) return 100;
+    return parsed;
   }
 }

@@ -2,9 +2,16 @@ import { ConfigService } from '@nestjs/config';
 import type { Redis } from 'ioredis';
 import { RedisService } from './redis.service';
 
-function makeConfig(prefix = 'accessTokens:'): ConfigService {
+function makeConfig(
+  prefix = 'accessTokens:',
+  overrides: Record<string, unknown> = {},
+): ConfigService {
+  const values: Record<string, unknown> = {
+    REDIS_TOKEN_PREFIX: prefix,
+    ...overrides,
+  };
   return {
-    get: <T>(_k: string, def?: T) => (prefix as unknown as T) ?? def,
+    get: <T>(k: string, def?: T) => (values[k] as T) ?? def,
   } as ConfigService;
 }
 
@@ -44,6 +51,43 @@ describe('RedisService', () => {
       await svc.isTokenValid('z');
 
       expect(client.get).toHaveBeenCalledWith('foo:z');
+    });
+
+    it('caches positive lookups briefly to avoid repeated Redis reads', async () => {
+      jest.useFakeTimers();
+      try {
+        const client = makeClient(async () => '1');
+        const svc = new RedisService(
+          client,
+          makeConfig('accessTokens:', { REDIS_TOKEN_CACHE_MS: '1000' }),
+        );
+
+        await svc.isTokenValid('abc');
+        await svc.isTokenValid('abc');
+
+        expect(client.get).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('refreshes the cache after the TTL expires', async () => {
+      jest.useFakeTimers();
+      try {
+        const client = makeClient(async () => '1');
+        const svc = new RedisService(
+          client,
+          makeConfig('accessTokens:', { REDIS_TOKEN_CACHE_MS: '1000' }),
+        );
+
+        await svc.isTokenValid('abc');
+        jest.advanceTimersByTime(1001);
+        await svc.isTokenValid('abc');
+
+        expect(client.get).toHaveBeenCalledTimes(2);
+      } finally {
+        jest.useRealTimers();
+      }
     });
   });
 });

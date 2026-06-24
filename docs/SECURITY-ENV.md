@@ -112,6 +112,7 @@ The Gateway reads only the prefix `accessTokens:` (via `REDIS_TOKEN_PREFIX`, def
 |----------------------|---------|-----|-------|
 | `REDIS_URL`          | ✅       | ✅   | Same Redis instance. |
 | `REDIS_TOKEN_PREFIX` | ✅       | —   | Must equal the API constant `accessTokens:`. |
+| `REDIS_TOKEN_CACHE_MS` | ✅     | —   | Optional positive cache for token allowlist hits at the gateway. Default `15000`. Lower it if you want tighter revocation reaction at the cost of more Redis reads. |
 
 ## 7. Token query fallback (legacy/native only)
 
@@ -183,3 +184,14 @@ See Play4CashPWA `docs/SECURITY-ENV.md` §11. Gateway-specific:
 - Replays `join`, `subscribe`, and `tournament:join` after upstream reconnect → emits `proxy_reconnected`.
 - Engine.IO ping aligned: `pingInterval=25000`, `pingTimeout=20000`.
 - Azure: enable WebSockets + ARR Affinity; idle timeout ≥ 240s until Redis adapter removes sticky requirement.
+
+## 12. Latency diagnostics
+
+Use these optional thresholds to emit warnings only when a request is slow enough to matter:
+
+| Variable | Default | Scope |
+|----------|---------|-------|
+| `GATEWAY_HTTP_SLOW_MS` | `250` | Total HTTP request time measured at the gateway. |
+| `GATEWAY_AUTH_SLOW_MS` | `25` | Time spent in `AuthMiddleware` for a single request. |
+| `GATEWAY_PROXY_SLOW_MS` | `100` | End-to-end proxy time from gateway entry to response finish. |
+| `GATEWAY_RATE_LIMIT_SLOW_MS` | `20` | Redis-backed rate-limit store calls. |
