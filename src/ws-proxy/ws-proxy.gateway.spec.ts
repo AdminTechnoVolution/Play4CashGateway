@@ -1,6 +1,5 @@
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
-import { ConnectFourEdgeGateway } from './connect-four-edge.gateway';
 import { PROXY_NAMESPACES, WsProxyGateway, buildUpstreamHandshake } from './ws-proxy.gateway';
 import type { RedisService } from '../redis/redis.service';
 import type { Socket } from 'socket.io';
@@ -105,14 +104,14 @@ describe('WsProxyGateway namespace registry', () => {
         '/domino',
         '/halma',
         '/uno',
+        '/connect-four',
         '/tournaments',
       ]),
     );
   });
 
-  it('keeps connect-four out of the downstream bridge because it has a Redis Streams edge', () => {
-    expect(PROXY_NAMESPACES).not.toContain('/connect-four');
-    expect(ConnectFourEdgeGateway).toBeDefined();
+  it('proxies connect-four through the same downstream Socket.IO bridge as fast games', () => {
+    expect(PROXY_NAMESPACES).toContain('/connect-four');
   });
 });
 
