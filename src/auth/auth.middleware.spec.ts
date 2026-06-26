@@ -114,6 +114,21 @@ describe('AuthMiddleware (Gateway)', () => {
     expect(res._status).toBe(0);
   });
 
+  it('skips auth for OPTIONS preflight requests', async () => {
+    const mw = new AuthMiddleware(makeJwt(), makeRedis(false), makeConfig());
+    const next = jest.fn() as NextFunction;
+    const res = makeRes();
+
+    await mw.use(
+      makeReq({ method: 'OPTIONS', path: '/api/user/account' }),
+      res as unknown as import('express').Response,
+      next,
+    );
+
+    expect(next).toHaveBeenCalled();
+    expect(res._status).toBe(0);
+  });
+
 
   it('accepts a valid token from the access cookie', async () => {
     const mw = new AuthMiddleware(makeJwt(), makeRedis(true), makeConfig());

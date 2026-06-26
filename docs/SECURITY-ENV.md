@@ -83,6 +83,12 @@ downstream handlers can't re-inject it.
 |----------------------|---------|-------|
 | `RATE_LIMIT_WINDOW_MS` | ✅     | Default 60 000. Gateway-wide rate-limit window. Backed by Redis so the same IP counts across replicas. |
 | `RATE_LIMIT_MAX`     | ✅       | Default 50/window per IP. The gateway blocks with `429` after the quota is exceeded. |
+| `RATE_LIMIT_SKIP_PATHS` | ✅    | Optional comma-separated list of paths or path prefixes that bypass the gateway limiter. Default skips login, dashboard reads, and history endpoints but keeps `/api/rooms/stats` protected. |
+
+Notes:
+
+- Path matching is prefix-aware. For example, `/api/login` also matches `/api/login/refresh` and `/api/login/invalidate-browser-session`.
+- Leave `/api/rooms/stats` out of the skip list so flood protection stays active on that hotspot.
 
 ### API
 

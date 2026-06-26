@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { Request, Response, NextFunction } from 'express';
 import { RedisService } from '../redis/redis.service';
+import { createRequestId, getCurrentRequestId } from '../common/request-context';
+import { normalizeGatewayPath } from '../common/http-path.util';
 
 const ACCESS_COOKIE_NAME = 'p4c_access';
 
@@ -26,7 +28,17 @@ export class AuthMiddleware implements NestMiddleware {
 
   async use(req: Request, res: Response, next: NextFunction): Promise<void> {
     const startedAt = process.hrtime.bigint();
-    const path = this.normalizePath(req.path.split('?')[0]);
+    const path = normalizeGatewayPath(req.path);
+    const requestId = createRequestId(req.headers['x-request-id']);
+    req.headers['x-request-id'] = requestId;
+    if (typeof res.setHeader === 'function') {
+      res.setHeader('x-request-id', requestId);
+    }
+
+    if (req.method === 'OPTIONS') {
+      this.logSlowAuth(req, path, startedAt, 'options_skip');
+      return next();
+    }
 
     if (this.isPublicPath(path)) {
       this.logSlowAuth(req, path, startedAt, 'public_skip');
@@ -80,15 +92,8 @@ export class AuthMiddleware implements NestMiddleware {
   private recordAuthFailure(req: Request, reason: string): void {
     const ip = (req.ip || req.socket?.remoteAddress || 'unknown').toString();
     this.logger.warn(
-      `event=auth_failure reason=${reason} method=${req.method} path=${req.path} ip=${ip}`,
+      `event=auth_failure reqId=${getCurrentRequestId() ?? 'n/a'} reason=${reason} method=${req.method} path=${req.path} ip=${ip}`,
     );
-  }
-
-  private normalizePath(path: string): string {
-    if (path.length > 1 && path.endsWith('/')) {
-      return path.replace(/\/+$/, '');
-    }
-    return path;
   }
 
   private isPublicPath(path: string): boolean {
@@ -97,7 +102,7 @@ export class AuthMiddleware implements NestMiddleware {
       this.publicPathSet = new Set(
         raw
           .split(',')
-          .map((s) => this.normalizePath(s.trim()))
+          .map((s) => normalizeGatewayPath(s))
           .filter(Boolean),
       );
     }
@@ -128,7 +133,7 @@ export class AuthMiddleware implements NestMiddleware {
     if (elapsedMs < thresholdMs) return;
 
     this.logger.warn(
-      `event=auth_slow outcome=${outcome} method=${req.method} path=${path} duration_ms=${elapsedMs.toFixed(1)}`,
+      `event=auth_slow reqId=${getCurrentRequestId() ?? 'n/a'} outcome=${outcome} method=${req.method} path=${path} duration_ms=${elapsedMs.toFixed(1)}`,
     );
   }
 

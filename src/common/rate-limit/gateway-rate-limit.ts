@@ -8,6 +8,7 @@ import {
   type Store,
 } from 'express-rate-limit';
 import type Redis from 'ioredis';
+import { getCurrentRequestId } from '../request-context';
 
 export interface GatewayRateLimitConfig {
   windowMs: number;
@@ -149,7 +150,7 @@ class RedisRateLimitStore implements Store {
     const thresholdMs = this.getSlowRateLimitThresholdMs();
     if (elapsedMs < thresholdMs) return;
     this.logger.warn(
-      `event=rate_limit_slow op=${operation} key=${key} duration_ms=${elapsedMs.toFixed(1)}`,
+      `event=rate_limit_slow reqId=${getCurrentRequestId() ?? 'n/a'} op=${operation} key=${key} duration_ms=${elapsedMs.toFixed(1)}`,
     );
   }
 

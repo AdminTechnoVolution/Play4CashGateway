@@ -6,10 +6,17 @@ import helmet from 'helmet';
 import type { NextFunction, Request, Response } from 'express';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import type Redis from 'ioredis';
+import { createRequestId, runWithRequestContext } from './common/request-context';
+import { parsePathSet, shouldSkipGatewayRateLimit } from './common/http-path.util';
 import {
   createGatewayRateLimitMiddleware,
   resolveGatewayRateLimitConfig,
 } from './common/rate-limit/gateway-rate-limit';
+
+const DEFAULT_PUBLIC_API_PATHS =
+  '/api/login,/api/login/refresh,/api/login/invalidate-browser-session,/api/user/register,/api/user/verify-code,/api/user/public/stats,/api/rooms/stats';
+const DEFAULT_RATE_LIMIT_SKIP_PATHS =
+  '/api/login,/api/user/register,/api/user/verify-code,/api/user/public/stats,/api/user/account,/api/games,/api/tournaments,/api/tournaments/mine,/api/rooms/active,/api/rooms/game,/api/user/history,/api/transactions/recharge/history,/api/transactions/withdrawal/history';
 
 async function bootstrap(): Promise<void> {
   const logger = new Logger('Bootstrap');
@@ -27,6 +34,14 @@ async function bootstrap(): Promise<void> {
 
   // Configuración de Seguridad (Helmet)
   app.set('trust proxy', 1);
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    const requestId = createRequestId(req.headers['x-request-id']);
+    req.headers['x-request-id'] = requestId;
+    if (typeof res.setHeader === 'function') {
+      res.setHeader('x-request-id', requestId);
+    }
+    runWithRequestContext(requestId, () => next());
+  });
   app.use(helmet());
 
   const slowHttpMs = resolveSlowHttpThreshold(
@@ -34,11 +49,12 @@ async function bootstrap(): Promise<void> {
   );
   app.use((req: Request, res: Response, next: NextFunction) => {
     const startedAt = process.hrtime.bigint();
+    const requestId = String(req.headers['x-request-id'] || 'n/a');
     res.on('finish', () => {
       const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
       if (elapsedMs < slowHttpMs) return;
       logger.warn(
-        `event=http_slow method=${req.method} path=${req.originalUrl || req.url} status=${res.statusCode} duration_ms=${elapsedMs.toFixed(1)}`,
+        `event=http_slow reqId=${requestId} method=${req.method} path=${req.originalUrl || req.url} status=${res.statusCode} duration_ms=${elapsedMs.toFixed(1)}`,
       );
     });
     next();
@@ -50,7 +66,18 @@ async function bootstrap(): Promise<void> {
     windowMs: rateLimitConfig.windowMs,
     max: rateLimitConfig.max,
   });
-  app.use(limiter);
+  // Rate limiting stays on for public routes by default; only OPTIONS and an
+  // explicit skip list are excluded.
+  const configuredRateLimitSkipPaths = configService.get<string>('RATE_LIMIT_SKIP_PATHS');
+  const rateLimitSkipPaths = parsePathSet(
+    configuredRateLimitSkipPaths?.trim() ? configuredRateLimitSkipPaths : DEFAULT_RATE_LIMIT_SKIP_PATHS,
+  );
+  app.use((req: Request, res: Response, next: NextFunction) => {
+    if (shouldSkipGatewayRateLimit(req.method, req.originalUrl || req.url, rateLimitSkipPaths)) {
+      return next();
+    }
+    return limiter(req, res, next);
+  });
 
   const port = configService.get<number>('PORT', 4000);
   const downstreamUrl = configService.getOrThrow<string>('DOWNSTREAM_URL');
