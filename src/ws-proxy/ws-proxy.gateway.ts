@@ -63,6 +63,7 @@ export const PROXY_NAMESPACES = [
   '/domino',
   '/halma',
   '/uno',
+  '/connect-four',
   '/tournaments',
 ] as const;
 
