@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import { Request, Response, NextFunction } from 'express';
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import type { IncomingMessage, ServerResponse } from 'http';
+import { getCurrentRequestId } from '../common/request-context';
+import { RedisService } from '../redis/redis.service';
 
 type ProxyHandler = (
   req: Request,
@@ -15,7 +17,10 @@ export class ProxyMiddleware implements NestMiddleware {
   private readonly logger = new Logger(ProxyMiddleware.name);
   private readonly proxy: ProxyHandler;
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly redisService: RedisService,
+  ) {
     const downstreamUrl = this.configService.getOrThrow<string>('DOWNSTREAM_URL');
 
     const middleware = createProxyMiddleware<IncomingMessage, ServerResponse>({
@@ -33,6 +38,9 @@ export class ProxyMiddleware implements NestMiddleware {
             );
           }
         },
+        proxyRes: (proxyRes, req) => {
+          this.primeAccessTokenCache(req as Request, proxyRes);
+        },
       },
     });
 
@@ -41,11 +49,15 @@ export class ProxyMiddleware implements NestMiddleware {
 
   use(req: Request, res: Response, next: NextFunction): void {
     const startedAt = process.hrtime.bigint();
+    const requestId = getCurrentRequestId();
     const trustHeader =
       this.configService.get<string>('GATEWAY_TRUST_HEADER_NAME') || 'x-gateway-internal';
     const headerKey = trustHeader.toLowerCase();
     const internalSecret = this.configService.get<string>('GATEWAY_INTERNAL_SECRET');
     delete (req.headers as Record<string, unknown>)[headerKey];
+    if (requestId) {
+      req.headers['x-request-id'] = requestId;
+    }
 
     const user = (req as Request & { user?: unknown }).user;
     if (user) {
@@ -62,12 +74,32 @@ export class ProxyMiddleware implements NestMiddleware {
       const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
       if (elapsedMs < thresholdMs) return;
       this.logger.warn(
-        `event=proxy_slow method=${req.method} path=${req.originalUrl || req.url} status=${res.statusCode} duration_ms=${elapsedMs.toFixed(1)} target=${this.configService.get('DOWNSTREAM_URL')}`,
+        `event=proxy_slow reqId=${requestId ?? 'n/a'} method=${req.method} path=${req.originalUrl || req.url} status=${res.statusCode} duration_ms=${elapsedMs.toFixed(1)} target=${this.configService.get('DOWNSTREAM_URL')}`,
       );
     });
 
-    this.logger.debug(`Proxying ${req.method} ${req.url} → ${this.configService.get('DOWNSTREAM_URL')}`);
+    this.logger.debug(
+      `Proxying ${req.method} ${req.url} → ${this.configService.get('DOWNSTREAM_URL')} reqId=${requestId ?? 'n/a'}`,
+    );
     this.proxy(req, res, next);
+  }
+
+  private primeAccessTokenCache(req: Request, proxyRes: { headers: Record<string, string | string[] | undefined> }): void {
+    const path = req.originalUrl || req.url || '';
+    if (req.method !== 'POST') return;
+    if (path !== '/api/login' && path !== '/api/login/refresh') return;
+
+    const setCookie = proxyRes.headers['set-cookie'];
+    const cookies = Array.isArray(setCookie) ? setCookie : typeof setCookie === 'string' ? [setCookie] : [];
+    const accessCookiePrefix = 'p4c_access=';
+    const accessCookie = cookies.find((cookie) => cookie.startsWith(accessCookiePrefix));
+    if (!accessCookie) return;
+
+    const tokenValue = accessCookie.slice(accessCookiePrefix.length).split(';')[0]?.trim();
+    if (!tokenValue) return;
+
+    const ttlMs = Number(this.configService.get<string>('REDIS_TOKEN_CACHE_MS', '60000'));
+    this.redisService.primeTokenValidity(decodeURIComponent(tokenValue), Number.isFinite(ttlMs) ? ttlMs : undefined);
   }
 
   private getSlowProxyThresholdMs(): number {

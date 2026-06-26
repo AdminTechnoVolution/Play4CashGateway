@@ -7,6 +7,7 @@ export class RedisService {
   // Short-lived cache for allowlist hits. The API still re-checks auth, so this
   // mainly removes repeated gateway-side Redis round trips on bursts of HTTP calls.
   private readonly tokenValidityCache = new Map<string, number>();
+  private readonly pendingTokenChecks = new Map<string, Promise<boolean>>();
 
   constructor(
     @Inject('REDIS_CLIENT') private readonly client: Redis,
@@ -30,6 +31,29 @@ export class RedisService {
       }
     }
 
+    const pending = this.pendingTokenChecks.get(token);
+    if (pending) {
+      return pending;
+    }
+
+    const lookup = this.lookupTokenValidity(token, cacheTtlMs, now);
+    this.pendingTokenChecks.set(token, lookup);
+    try {
+      return await lookup;
+    } finally {
+      this.pendingTokenChecks.delete(token);
+    }
+  }
+
+  primeTokenValidity(token: string, ttlMs?: number): void {
+    const effectiveTtl = this.getTokenValidityCacheTtlMs();
+    const cacheTtlMs = Math.max(1, Math.trunc(ttlMs ?? effectiveTtl));
+    if (!Number.isFinite(cacheTtlMs) || cacheTtlMs <= 0) return;
+    this.pendingTokenChecks.delete(token);
+    this.tokenValidityCache.set(token, Date.now() + cacheTtlMs);
+  }
+
+  private async lookupTokenValidity(token: string, cacheTtlMs: number, now: number): Promise<boolean> {
     const prefix = this.configService.get<string>(
       'REDIS_TOKEN_PREFIX',
       'accessTokens:',
@@ -43,7 +67,7 @@ export class RedisService {
   }
 
   private getTokenValidityCacheTtlMs(): number {
-    const raw = this.configService.get<string>('REDIS_TOKEN_CACHE_MS', '15000');
+    const raw = this.configService.get<string>('REDIS_TOKEN_CACHE_MS', '60000');
     const ttlMs = Number(raw);
     if (!Number.isFinite(ttlMs) || ttlMs < 0) return 0;
     return Math.trunc(ttlMs);

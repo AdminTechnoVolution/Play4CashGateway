@@ -14,13 +14,20 @@ import { RedisService } from './redis.service';
           configService.get<string>('REDIS_URL') ||
           configService.get<string>('REDIS_URI');
         if (redisUrl) {
-          return new Redis(redisUrl, { lazyConnect: false });
+          return new Redis(redisUrl, {
+            lazyConnect: false,
+            enableAutoPipelining: true,
+          });
         }
+        const portRaw = configService.get<string | number>('REDIS_PORT', 6379);
+        const parsedPort =
+          typeof portRaw === 'number' ? portRaw : Number.parseInt(String(portRaw), 10);
         return new Redis({
           host: configService.get<string>('REDIS_HOST', 'localhost'),
-          port: configService.get<number>('REDIS_PORT', 6379),
+          port: Number.isFinite(parsedPort) ? parsedPort : 6379,
           password: configService.get<string>('REDIS_PASSWORD') || undefined,
           lazyConnect: false,
+          enableAutoPipelining: true,
         });
       },
       inject: [ConfigService],
