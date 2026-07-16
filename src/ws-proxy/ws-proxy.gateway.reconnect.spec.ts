@@ -186,6 +186,36 @@ describe('WsProxyGateway upstream reconnection (Phase D)', () => {
     expect(lastBackendSocket!.emit).toHaveBeenCalledWith('join', { room_id: 'second' });
   });
 
+  it('replays get_state after reconnect so a missed gameStarted event is recoverable', async () => {
+    const gw = new WsProxyGateway(makeConfigService(), makeJwt(), makeRedis());
+    const client = makeClient();
+    await (gw as any).bridge(client, '/domino', 'http://upstream');
+
+    lastBackendSocket!.connected = true;
+    client.__fire('__onAny', 'get_state', { room_id: 'room-started' });
+
+    lastBackendSocket!.emit.mockClear();
+    lastBackendSocket!.__fireManager('reconnect', 1);
+
+    expect(lastBackendSocket!.emit).toHaveBeenCalledTimes(1);
+    expect(lastBackendSocket!.emit).toHaveBeenCalledWith('get_state', { room_id: 'room-started' });
+  });
+
+  it('does not duplicate a queued get_state while reconnecting', async () => {
+    const gw = new WsProxyGateway(makeConfigService(), makeJwt(), makeRedis());
+    const client = makeClient();
+    await (gw as any).bridge(client, '/domino', 'http://upstream');
+
+    lastBackendSocket!.connected = false;
+    client.__fire('__onAny', 'get_state', { room_id: 'room-started' });
+
+    lastBackendSocket!.emit.mockClear();
+    lastBackendSocket!.__fireManager('reconnect', 1);
+
+    expect(lastBackendSocket!.emit).toHaveBeenCalledTimes(1);
+    expect(lastBackendSocket!.emit).toHaveBeenCalledWith('get_state', { room_id: 'room-started' });
+  });
+
   it('caches subscribe events too (lobby /rooms namespace)', async () => {
     const gw = new WsProxyGateway(makeConfigService(), makeJwt(), makeRedis());
     const client = makeClient();

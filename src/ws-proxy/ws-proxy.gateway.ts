@@ -232,7 +232,10 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
   }
 
   private readParkGraceMs(): number {
-    const raw = Number(this.configService.get<string>('WS_PARK_GRACE_MS') ?? '90000');
+    // The API owns the durable, anti-forfeit grace period. Keeping the upstream
+    // socket alive for 90 seconds hid real disconnects from that watchdog and left
+    // rooms stuck. This short bridge grace only absorbs a transport hand-off.
+    const raw = Number(this.configService.get<string>('WS_PARK_GRACE_MS') ?? '5000');
     return Number.isFinite(raw) && raw >= 5_000 ? raw : 90_000;
   }
 
@@ -351,7 +354,7 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     });
 
     const pendingEvents = resume?.pendingEvents ?? [];
-    const REPLAY_EVENTS = new Set(['join', 'subscribe', 'tournament:join']);
+    const REPLAY_EVENTS = new Set(['join', 'get_state', 'subscribe', 'tournament:join']);
     let lastJoin: { event: string; args: unknown[] } | null = resume?.lastJoin ?? null;
 
     const replayLastJoin = (): void => {
@@ -365,14 +368,22 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       }
     };
 
+    const flushPendingAndReplay = (): void => {
+      let replayAlreadyQueued = false;
+      for (const { event, args } of pendingEvents.splice(0)) {
+        backendSocket.emit(event, ...args);
+        if (lastJoin && event === lastJoin.event && args === lastJoin.args) {
+          replayAlreadyQueued = true;
+        }
+      }
+      if (!replayAlreadyQueued) replayLastJoin();
+    };
+
     backendSocket.on('connect', () => {
       this.logger.log(
         `[${namespace}] Backend conectado para cliente ${client.id}`,
       );
-      for (const { event, args } of pendingEvents) {
-        backendSocket.emit(event, ...args);
-      }
-      pendingEvents.length = 0;
+      flushPendingAndReplay();
 
       if (namespace === '/rooms' && playerId) {
         const track = this.getUserTrack(playerId);
@@ -406,11 +417,7 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       this.logger.log(
         `[${namespace}] Backend reconectado para ${client.id} tras ${attempt} intento(s); replay del ultimo join.`,
       );
-      replayLastJoin();
-      for (const { event, args } of pendingEvents) {
-        backendSocket.emit(event, ...args);
-      }
-      pendingEvents.length = 0;
+      flushPendingAndReplay();
       client.emit('proxy_reconnected', { namespace });
     };
 
@@ -490,6 +497,10 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       }
       backendSocket.disconnect();
     });
+
+    // A parked upstream can already be connected when a new downstream transport
+    // takes ownership. Replay its durable join/get_state immediately for the new PWA.
+    if (resume && backendSocket.connected) queueMicrotask(flushPendingAndReplay);
   }
 
   /**
