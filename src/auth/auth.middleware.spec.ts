@@ -17,7 +17,7 @@ function makeConfig(overrides: Record<string, unknown> = {}): ConfigService {
     ADMIN_JWT_SECRET_KEY: ADMIN_SECRET,
     ADMIN_JWT_ISSUER: ISSUER,
     ADMIN_JWT_AUDIENCE: 'play4cash-admin',
-    ADMIN_REDIS_ACCESS_PREFIX: 'admin:access:',
+    ADMIN_REDIS_ACCESS_PREFIX: 'admin:accessTokens:',
     PUBLIC_API_PATHS: '/api/login,/api/health',
     ALLOW_HTTP_TOKEN_QUERY: 'false',
     REDIS_TOKEN_PREFIX: 'accessTokens:',
@@ -271,7 +271,7 @@ describe('AuthMiddleware (Gateway)', () => {
     );
     expect(redis.isTokenValid).toHaveBeenCalledWith(
       'admin.jwt.token',
-      'admin:access:',
+      'admin:accessTokens:',
     );
     expect(next).toHaveBeenCalled();
   });
@@ -307,7 +307,7 @@ describe('AuthMiddleware (Gateway)', () => {
     );
     expect(redis.isTokenValid).toHaveBeenCalledWith(
       'fresh.admin.token',
-      'admin:access:',
+      'admin:accessTokens:',
     );
     expect(next).toHaveBeenCalled();
   });
