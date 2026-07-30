@@ -9,7 +9,7 @@ import { normalizeGatewayPath } from '../common/http-path.util';
 const ACCESS_COOKIE_NAME = 'p4c_access';
 const ADMIN_ACCESS_COOKIE_NAME = 'p4c_admin_access';
 const ADMIN_PATH_PREFIX = '/api/admin/';
-const ADMIN_REDIS_ACCESS_PREFIX = 'admin:access:';
+const ADMIN_REDIS_ACCESS_PREFIX = 'admin:accessTokens:';
 const REQUIRED_ADMIN_PUBLIC_PATHS = [
   '/api/admin/auth/login',
   '/api/admin/auth/refresh',
