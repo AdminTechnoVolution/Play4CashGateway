@@ -149,14 +149,14 @@ export class AuthMiddleware implements NestMiddleware {
   }
 
   private extractToken(req: Request, isAdminRoute: boolean): string | null {
+    const authHeader = req.headers['authorization'];
+    if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7);
+
     const cookieToken = readCookie(
       req.headers.cookie,
       isAdminRoute ? ADMIN_ACCESS_COOKIE_NAME : ACCESS_COOKIE_NAME,
     );
     if (cookieToken) return cookieToken;
-
-    const authHeader = req.headers['authorization'];
-    if (authHeader?.startsWith('Bearer ')) return authHeader.slice(7);
 
     const allowQuery =
       this.configService.get<string>('ALLOW_HTTP_TOKEN_QUERY', 'false').toLowerCase() === 'true';
