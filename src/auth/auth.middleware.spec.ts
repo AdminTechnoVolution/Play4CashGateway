@@ -276,6 +276,42 @@ describe('AuthMiddleware (Gateway)', () => {
     expect(next).toHaveBeenCalled();
   });
 
+  it('prefers a fresh admin bearer token over a stale admin cookie', async () => {
+    const payload = {
+      id: 'admin-1',
+      typ: 'access',
+      actor_type: 'admin',
+      role: 'admin',
+    };
+    const jwtService = makeJwt(payload);
+    const redis = makeRedis(true);
+    const mw = new AuthMiddleware(jwtService, redis, makeConfig());
+    const res = makeRes();
+    const next = jest.fn();
+
+    await mw.use(
+      makeReq({
+        path: '/api/admin/auth/me',
+        headers: {
+          authorization: 'Bearer fresh.admin.token',
+          cookie: 'p4c_admin_access=stale.admin.token',
+        },
+      }),
+      res as unknown as Response,
+      next,
+    );
+
+    expect(jwtService.verifyAsync).toHaveBeenCalledWith(
+      'fresh.admin.token',
+      expect.any(Object),
+    );
+    expect(redis.isTokenValid).toHaveBeenCalledWith(
+      'fresh.admin.token',
+      'admin:access:',
+    );
+    expect(next).toHaveBeenCalled();
+  });
+
   it('rejects an admin token on player routes', async () => {
     const mw = new AuthMiddleware(
       makeJwt({ typ: 'access', actor_type: 'admin', role: 'admin' }),

@@ -93,6 +93,14 @@ async function bootstrap(): Promise<void> {
       'Gateway: CORS_ORIGINS must list at least one origin when NODE_ENV=production (credentials are enabled).',
     );
   }
+  if (
+    nodeEnv === 'production'
+    && !configService.get<string>('ADMIN_JWT_SECRET_KEY', '').trim()
+  ) {
+    throw new Error(
+      'Gateway: ADMIN_JWT_SECRET_KEY is required in production and must match Play4CashApi.',
+    );
+  }
 
   app.enableCors({
     origin: corsOrigins.length > 0 ? corsOrigins : true,
