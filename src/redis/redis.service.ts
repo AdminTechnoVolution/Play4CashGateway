@@ -14,7 +14,8 @@ export class RedisService {
     private readonly configService: ConfigService,
   ) {}
 
-  async isTokenValid(token: string): Promise<boolean> {
+  async isTokenValid(token: string, prefixOverride?: string): Promise<boolean> {
+    const cacheKey = `${prefixOverride || ''}\u0000${token}`;
     const cacheTtlMs = this.getTokenValidityCacheTtlMs();
     const now = Date.now();
     if (cacheTtlMs > 0) {
@@ -22,26 +23,26 @@ export class RedisService {
         this.pruneExpiredTokenCache(now);
       }
 
-      const cachedUntil = this.tokenValidityCache.get(token);
+      const cachedUntil = this.tokenValidityCache.get(cacheKey);
       if (cachedUntil && cachedUntil > now) {
         return true;
       }
       if (cachedUntil) {
-        this.tokenValidityCache.delete(token);
+        this.tokenValidityCache.delete(cacheKey);
       }
     }
 
-    const pending = this.pendingTokenChecks.get(token);
+    const pending = this.pendingTokenChecks.get(cacheKey);
     if (pending) {
       return pending;
     }
 
-    const lookup = this.lookupTokenValidity(token, cacheTtlMs, now);
-    this.pendingTokenChecks.set(token, lookup);
+    const lookup = this.lookupTokenValidity(token, cacheKey, cacheTtlMs, now, prefixOverride);
+    this.pendingTokenChecks.set(cacheKey, lookup);
     try {
       return await lookup;
     } finally {
-      this.pendingTokenChecks.delete(token);
+      this.pendingTokenChecks.delete(cacheKey);
     }
   }
 
@@ -53,15 +54,21 @@ export class RedisService {
     this.tokenValidityCache.set(token, Date.now() + cacheTtlMs);
   }
 
-  private async lookupTokenValidity(token: string, cacheTtlMs: number, now: number): Promise<boolean> {
-    const prefix = this.configService.get<string>(
+  private async lookupTokenValidity(
+    token: string,
+    cacheKey: string,
+    cacheTtlMs: number,
+    now: number,
+    prefixOverride?: string,
+  ): Promise<boolean> {
+    const prefix = prefixOverride || this.configService.get<string>(
       'REDIS_TOKEN_PREFIX',
       'accessTokens:',
     );
     const key = `${prefix}${token}`;
     const value = await this.client.get(key);
     if (value !== null && cacheTtlMs > 0) {
-      this.tokenValidityCache.set(token, now + cacheTtlMs);
+      this.tokenValidityCache.set(cacheKey, now + cacheTtlMs);
     }
     return value !== null;
   }

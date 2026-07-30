@@ -7,12 +7,17 @@ import type { RedisService } from '../redis/redis.service';
 const SECRET = 'unit-test-secret';
 const ISSUER = 'play4cash-api';
 const AUDIENCE = 'play4cash-clients';
+const ADMIN_SECRET = 'unit-test-admin-secret';
 
 function makeConfig(overrides: Record<string, unknown> = {}): ConfigService {
   const values: Record<string, unknown> = {
     JWT_SECRET: SECRET,
     JWT_ISSUER: ISSUER,
     JWT_AUDIENCE: AUDIENCE,
+    ADMIN_JWT_SECRET_KEY: ADMIN_SECRET,
+    ADMIN_JWT_ISSUER: ISSUER,
+    ADMIN_JWT_AUDIENCE: 'play4cash-admin',
+    ADMIN_REDIS_ACCESS_PREFIX: 'admin:access:',
     PUBLIC_API_PATHS: '/api/login,/api/health',
     ALLOW_HTTP_TOKEN_QUERY: 'false',
     REDIS_TOKEN_PREFIX: 'accessTokens:',
@@ -109,6 +114,25 @@ describe('AuthMiddleware (Gateway)', () => {
     const res = makeRes();
 
     await mw.use(makeReq({ path: '/api/login' }), res as unknown as import('express').Response, next);
+
+    expect(next).toHaveBeenCalled();
+    expect(res._status).toBe(0);
+  });
+
+  it('always skips admin login bootstrap routes with an older public-path override', async () => {
+    const mw = new AuthMiddleware(
+      makeJwt(),
+      makeRedis(false),
+      makeConfig({ PUBLIC_API_PATHS: '/api/login' }),
+    );
+    const next = jest.fn() as NextFunction;
+    const res = makeRes();
+
+    await mw.use(
+      makeReq({ method: 'POST', path: '/api/admin/auth/login' }),
+      res as unknown as import('express').Response,
+      next,
+    );
 
     expect(next).toHaveBeenCalled();
     expect(res._status).toBe(0);
@@ -217,6 +241,57 @@ describe('AuthMiddleware (Gateway)', () => {
     expect(next).toHaveBeenCalled();
     expect((req as Request & { user?: unknown }).user).toEqual(payload);
     expect(res._status).toBe(0);
+  });
+
+  it('validates admin routes with the isolated secret, audience and Redis prefix', async () => {
+    const payload = {
+      id: 'admin-1',
+      typ: 'access',
+      actor_type: 'admin',
+      role: 'admin',
+    };
+    const jwtService = makeJwt(payload);
+    const redis = makeRedis(true);
+    const mw = new AuthMiddleware(jwtService, redis, makeConfig());
+    const res = makeRes();
+    const req = makeReq({
+      path: '/api/admin/health',
+      headers: { cookie: 'p4c_admin_access=admin.jwt.token' },
+    });
+    const next = jest.fn();
+
+    await mw.use(req, res as unknown as import('express').Response, next);
+
+    expect(jwtService.verifyAsync).toHaveBeenCalledWith(
+      'admin.jwt.token',
+      expect.objectContaining({
+        secret: ADMIN_SECRET,
+        audience: 'play4cash-admin',
+      }),
+    );
+    expect(redis.isTokenValid).toHaveBeenCalledWith(
+      'admin.jwt.token',
+      'admin:access:',
+    );
+    expect(next).toHaveBeenCalled();
+  });
+
+  it('rejects an admin token on player routes', async () => {
+    const mw = new AuthMiddleware(
+      makeJwt({ typ: 'access', actor_type: 'admin', role: 'admin' }),
+      makeRedis(true),
+      makeConfig(),
+    );
+    const res = makeRes();
+
+    await mw.use(
+      makeReq({ headers: { authorization: 'Bearer admin.jwt.token' } }),
+      res as unknown as Response,
+      jest.fn(),
+    );
+
+    expect(res._status).toBe(401);
+    expect(res._body).toMatchObject({ message: 'Invalid token type' });
   });
 
   it('refuses ?token= when ALLOW_HTTP_TOKEN_QUERY=false', async () => {
