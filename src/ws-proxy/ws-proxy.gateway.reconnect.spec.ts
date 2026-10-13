@@ -131,6 +131,16 @@ function makeRedis(valid = true): RedisService {
   return { isTokenValid: jest.fn().mockResolvedValue(valid) } as unknown as RedisService;
 }
 
+/**
+ * Inbound client events are now forwarded through an async promise chain
+ * (rate-limit check is a Redis round trip), so `client.__fire('__onAny', ...)`
+ * no longer forwards synchronously. Flush the microtask queue before asserting
+ * on what reached the backend socket.
+ */
+function flushMicrotasks(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
 describe('WsProxyGateway upstream reconnection (Phase D)', () => {
   beforeEach(() => {
     lastBackendSocket = undefined;
@@ -160,6 +170,7 @@ describe('WsProxyGateway upstream reconnection (Phase D)', () => {
     // Simulate the PWA emitting join with a room_id while upstream is up.
     lastBackendSocket!.connected = true;
     client.__fire('__onAny', 'join', { room_id: 'room-9' });
+    await flushMicrotasks();
 
     // Now the upstream drops & recovers.
     lastBackendSocket!.connected = false;
@@ -178,6 +189,7 @@ describe('WsProxyGateway upstream reconnection (Phase D)', () => {
     lastBackendSocket!.connected = true;
     client.__fire('__onAny', 'join', { room_id: 'first' });
     client.__fire('__onAny', 'join', { room_id: 'second' });
+    await flushMicrotasks();
 
     lastBackendSocket!.emit.mockClear();
     lastBackendSocket!.__fireManager('reconnect', 1);
@@ -193,6 +205,7 @@ describe('WsProxyGateway upstream reconnection (Phase D)', () => {
 
     lastBackendSocket!.connected = true;
     client.__fire('__onAny', 'get_state', { room_id: 'room-started' });
+    await flushMicrotasks();
 
     lastBackendSocket!.emit.mockClear();
     lastBackendSocket!.__fireManager('reconnect', 1);
@@ -208,6 +221,7 @@ describe('WsProxyGateway upstream reconnection (Phase D)', () => {
 
     lastBackendSocket!.connected = false;
     client.__fire('__onAny', 'get_state', { room_id: 'room-started' });
+    await flushMicrotasks();
 
     lastBackendSocket!.emit.mockClear();
     lastBackendSocket!.__fireManager('reconnect', 1);
@@ -223,6 +237,7 @@ describe('WsProxyGateway upstream reconnection (Phase D)', () => {
 
     lastBackendSocket!.connected = true;
     client.__fire('__onAny', 'subscribe', { game_id: 'g-1', room_id: 'room-1' });
+    await flushMicrotasks();
 
     lastBackendSocket!.emit.mockClear();
     lastBackendSocket!.__fireManager('reconnect', 2);
@@ -262,6 +277,7 @@ describe('WsProxyGateway upstream reconnection (Phase D)', () => {
 
     lastBackendSocket!.connected = true;
     client.__fire('__onAny', 'tournament:join', { tournament_id: 't-1' });
+    await flushMicrotasks();
 
     lastBackendSocket!.emit.mockClear();
     lastBackendSocket!.__fireManager('reconnect', 1);

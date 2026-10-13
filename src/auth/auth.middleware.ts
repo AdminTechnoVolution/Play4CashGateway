@@ -5,6 +5,7 @@ import { Request, Response, NextFunction } from 'express';
 import { RedisService } from '../redis/redis.service';
 import { createRequestId, getCurrentRequestId } from '../common/request-context';
 import { normalizeGatewayPath } from '../common/http-path.util';
+import { FAKE_LOGIN_PATH, isFakeLoginEnabled } from '../common/fake-login.util';
 
 const ACCESS_COOKIE_NAME = 'p4c_access';
 const ADMIN_ACCESS_COOKIE_NAME = 'p4c_admin_access';
@@ -142,6 +143,12 @@ export class AuthMiddleware implements NestMiddleware {
       // an older deployment override.
       for (const requiredPath of REQUIRED_ADMIN_PUBLIC_PATHS) {
         this.publicPathSet.add(requiredPath);
+      }
+      // Test-only login bypass — only reachable unauthenticated when explicitly
+      // enabled (and never in production). The API applies the identical gate
+      // independently, so this can't drift into being the weaker link.
+      if (isFakeLoginEnabled()) {
+        this.publicPathSet.add(FAKE_LOGIN_PATH);
       }
     }
 

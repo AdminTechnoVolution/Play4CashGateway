@@ -1,3 +1,12 @@
+// Must be the very first import: `@WebSocketGateway({ cors: buildWsCors() })` in
+// ws-proxy.gateway.ts reads process.env.CORS_ORIGINS/NODE_ENV at decorator-evaluation
+// time, which happens while `AppModule` (imported below) is being required — well
+// before Nest's `ConfigModule.forRoot()` gets a chance to load .env. Without this
+// eager load, CORS_ORIGINS/NODE_ENV are empty at that point in local dev (where env
+// vars only exist in .env), so the WS proxy silently falls back to denying every
+// origin. Real deployments (Azure, etc.) inject env vars into the process directly,
+// so they were never affected — this only ever broke local dev.
+import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { Logger, ValidationPipe } from '@nestjs/common';
@@ -12,6 +21,7 @@ import {
   createGatewayRateLimitMiddleware,
   resolveGatewayRateLimitConfig,
 } from './common/rate-limit/gateway-rate-limit';
+import { isPermissiveDevEnv, resolveCorsOrigin } from './common/cors-origin.util';
 
 const DEFAULT_PUBLIC_API_PATHS =
   '/api/login,/api/login/refresh,/api/login/invalidate-browser-session,/api/user/register,/api/user/verify-code,/api/user/public/stats,/api/rooms/stats';
@@ -88,9 +98,15 @@ async function bootstrap(): Promise<void> {
     .filter(Boolean);
 
   const nodeEnv = configService.get<string>('NODE_ENV', process.env.NODE_ENV || 'development');
-  if (nodeEnv === 'production' && corsOrigins.length === 0) {
+  // Fail loud at boot rather than silently reflecting any origin: this used to only
+  // check `nodeEnv === 'production'`, which left an unset NODE_ENV, a typo, or a
+  // staging value like "sit" free to fall through to permissive CORS with
+  // credentials. Any environment outside the explicit dev/test allowlist now
+  // requires CORS_ORIGINS to be set, same as production did before.
+  if (corsOrigins.length === 0 && !isPermissiveDevEnv(nodeEnv)) {
     throw new Error(
-      'Gateway: CORS_ORIGINS must list at least one origin when NODE_ENV=production (credentials are enabled).',
+      `Gateway: CORS_ORIGINS must list at least one origin when NODE_ENV="${nodeEnv}" (credentials are enabled). ` +
+        'Set NODE_ENV=development or NODE_ENV=test if this is intentionally a local/dev run.',
     );
   }
   if (
@@ -103,7 +119,7 @@ async function bootstrap(): Promise<void> {
   }
 
   app.enableCors({
-    origin: corsOrigins.length > 0 ? corsOrigins : true,
+    origin: resolveCorsOrigin(nodeEnv, corsOrigins),
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     // Includes X-App-Version so the PWA can publish its running build to every API call.
     // Idempotency-Key: POST /api/rooms (create room) — required or browsers block preflight.
