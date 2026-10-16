@@ -11,6 +11,8 @@ import { Server, Socket } from 'socket.io';
 import { RedisService } from '../redis/redis.service';
 import { compareSemver } from '../common/semver-compare.util';
 import { SOCKET_IO_PING_OPTIONS } from '../common/socket-io-options';
+import { WsRateLimiterService } from '../common/rate-limit/ws-rate-limiter.service';
+import { resolveCorsOrigin } from '../common/cors-origin.util';
 import {
   buildResultEnvelope,
   extractPlayerId,
@@ -73,7 +75,9 @@ function buildWsCors(): { origin: boolean | string[]; credentials: boolean } {
     .map((o) => o.trim())
     .filter(Boolean);
   return {
-    origin: origins.length > 0 ? origins : true,
+    // Same rule as the HTTP CORS in main.ts: explicit origins win; otherwise only
+    // known dev/test environments get the permissive reflect-any-origin fallback.
+    origin: resolveCorsOrigin(process.env.NODE_ENV, origins),
     credentials: true,
   };
 }
@@ -84,6 +88,7 @@ function buildWsCors(): { origin: boolean | string[]; credentials: boolean } {
   ...SOCKET_IO_PING_OPTIONS,
 })
 export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
+  private inboundQueueDepth = 0;
   @WebSocketServer() private readonly io!: Server;
   private readonly logger = new Logger(WsProxyGateway.name);
 
@@ -100,6 +105,7 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     private readonly configService: ConfigService,
     private readonly jwtService: JwtService,
     private readonly redisService: RedisService,
+    private readonly wsRateLimiter?: WsRateLimiterService,
   ) {}
 
   afterInit(server: Server): void {
@@ -231,6 +237,26 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     }
   }
 
+  /** Max inbound client events allowed per player+namespace within `readEventRateWindowMs()`. */
+  private readEventRateLimitMax(): number {
+    const raw = Number(this.configService.get<string>('WS_EVENT_RATE_LIMIT_MAX') ?? '30');
+    return Number.isFinite(raw) && raw >= 1 ? raw : 30;
+  }
+
+  private readEventRateWindowMs(): number {
+    const raw = Number(this.configService.get<string>('WS_EVENT_RATE_LIMIT_WINDOW_MS') ?? '10000');
+    return Number.isFinite(raw) && raw >= 1000 ? raw : 10_000;
+  }
+
+  private async allowEvent(namespace: string, playerId: string): Promise<boolean> {
+    if (!this.wsRateLimiter) return true;
+    return this.wsRateLimiter.allow(
+      `${namespace}:${playerId}`,
+      this.readEventRateLimitMax(),
+      this.readEventRateWindowMs(),
+    );
+  }
+
   private readParkGraceMs(): number {
     // The API owns the durable, anti-forfeit grace period. Keeping the upstream
     // socket alive for 90 seconds hid real disconnects from that watchdog and left
@@ -245,16 +271,19 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     downstreamUrl: string,
   ): Promise<void> {
     const auth = client.handshake.auth as Record<string, string>;
-    const query = client.handshake.query as Record<string, string>;
     const authHeader = client.handshake.headers?.authorization as
       | string
       | undefined;
     const cookieToken = readCookie(client.handshake.headers?.cookie as string | undefined, 'p4c_access');
 
+    // Deliberately no `query.token` fallback: Socket.IO's polling transport is
+    // plain HTTP GET, so a token placed in the query string ends up in proxy/CDN
+    // access logs and browser history. The PWA authenticates via the httpOnly
+    // cookie; any client that can't use cookies should send the token in the
+    // handshake `auth` payload instead, which never touches the URL.
     const token =
       cookieToken ||
       auth?.token ||
-      query?.token ||
       authHeader?.replace(/^Bearer\s+/i, '') ||
       '';
 
@@ -428,19 +457,59 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       this.forwardDownstream(client, namespace, playerId, event, args);
     });
 
+    // Rate-limit checks are async (Redis round trip). Chaining each event onto the
+    // previous one's completion keeps per-client forwarding strictly in order —
+    // firing the checks concurrently could let a later move's Redis round trip
+    // finish first and reach the backend out of turn order.
+    let inboundChain: Promise<void> = Promise.resolve();
+    let inboundPending = 0;
+    const MAX_PENDING_EVENTS = 32;
+
     client.onAny((event: string, ...args: unknown[]) => {
-      if (REPLAY_EVENTS.has(event)) {
-        lastJoin = { event, args };
-        const roomId = extractRoomIdFromJoinArgs(args);
-        if (roomId) {
-          this.getUserTrack(playerId).lastRoomIdByNamespace.set(namespace, roomId);
+      if (Buffer.byteLength(JSON.stringify(args)) > 8192 || inboundPending >= MAX_PENDING_EVENTS || this.inboundQueueDepth >= 1024) {
+        client.emit('proxy_busy', { event, retryable: true });
+        return;
+      }
+      inboundPending++;
+      this.inboundQueueDepth++;
+      inboundChain = inboundChain.then(async () => {
+        // Player-scoped (not IP-scoped) — reconnecting from a different address
+        // doesn't reset the counter. Protects the downstream API/Redis from a
+        // single compromised or malicious session flooding game-action events.
+        const allowed = await this.allowEvent(namespace, playerId);
+        if (!allowed) {
+          this.logger.warn(
+            `event=ws_event_rate_limited ns=${namespace} sid=${client.id} player=${playerId} evt=${event}`,
+          );
+          client.emit('rate_limited', { event });
+          return;
         }
-      }
-      if (backendSocket.connected) {
-        backendSocket.emit(event, ...args);
-      } else {
-        pendingEvents.push({ event, args });
-      }
+
+        if (REPLAY_EVENTS.has(event)) {
+          lastJoin = { event, args };
+          const roomId = extractRoomIdFromJoinArgs(args);
+          if (roomId) {
+            this.getUserTrack(playerId).lastRoomIdByNamespace.set(namespace, roomId);
+          }
+        }
+        if (backendSocket.connected) {
+          backendSocket.emit(event, ...args);
+        } else {
+          if (!REPLAY_EVENTS.has(event)) {
+            client.emit('proxy_busy', { event, retryable: true, reason: 'BACKEND_RECOVERING' });
+            return;
+          }
+          if (pendingEvents.length >= MAX_PENDING_EVENTS) {
+            client.emit('proxy_busy', { event, retryable: true });
+            return;
+          }
+          pendingEvents.push({ event, args });
+        }
+      }).catch((err) => {
+        this.logger.warn(
+          `event=ws_event_forward_failed ns=${namespace} sid=${client.id} evt=${event} err=${(err as Error).message}`,
+        );
+      }).finally(() => { inboundPending--; this.inboundQueueDepth--; });
     });
 
     client.once('disconnect', (reason: string) => {
@@ -614,7 +683,8 @@ export function buildUpstreamHandshake(
   const queryHs = client.handshake.query as Record<string, unknown> | undefined;
 
   const upstreamAuth: Record<string, string> = { token };
-  const upstreamQuery: Record<string, string> = { token };
+  const upstreamQuery: Record<string, string> = {};
+  if (authHs?.commandProtocol === '1') upstreamAuth.commandProtocol = '1';
 
   const langRaw = handshakeString(authHs, queryHs, 'lang').toLowerCase();
   if (langRaw && UPSTREAM_LANG_ALLOWED.has(langRaw)) {

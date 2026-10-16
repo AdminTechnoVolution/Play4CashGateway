@@ -17,6 +17,9 @@ import { RedisService } from './redis.service';
           return new Redis(redisUrl, {
             lazyConnect: false,
             enableAutoPipelining: true,
+            enableOfflineQueue: false,
+            maxRetriesPerRequest: 1,
+            commandTimeout: 2000,
           });
         }
         const portRaw = configService.get<string | number>('REDIS_PORT', 6379);
@@ -28,6 +31,9 @@ import { RedisService } from './redis.service';
           password: configService.get<string>('REDIS_PASSWORD') || undefined,
           lazyConnect: false,
           enableAutoPipelining: true,
+          enableOfflineQueue: false,
+          maxRetriesPerRequest: 1,
+          commandTimeout: 2000,
         });
       },
       inject: [ConfigService],

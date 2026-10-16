@@ -137,7 +137,7 @@ describe('buildUpstreamHandshake', () => {
     });
     const { auth, query } = buildUpstreamHandshake(client, 'jwt-token');
     expect(auth).toEqual({ token: 'jwt-token', lang: 'es', appVersion: '1.2.3' });
-    expect(query).toEqual({ token: 'jwt-token', lang: 'es', appVersion: '1.2.3' });
+    expect(query).toEqual({ lang: 'es', appVersion: '1.2.3' });
   });
 
   it('reads lang from query when auth omits it', () => {
