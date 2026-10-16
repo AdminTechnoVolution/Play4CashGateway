@@ -88,6 +88,7 @@ function buildWsCors(): { origin: boolean | string[]; credentials: boolean } {
   ...SOCKET_IO_PING_OPTIONS,
 })
 export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
+  private inboundQueueDepth = 0;
   @WebSocketServer() private readonly io!: Server;
   private readonly logger = new Logger(WsProxyGateway.name);
 
@@ -461,8 +462,16 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     // firing the checks concurrently could let a later move's Redis round trip
     // finish first and reach the backend out of turn order.
     let inboundChain: Promise<void> = Promise.resolve();
+    let inboundPending = 0;
+    const MAX_PENDING_EVENTS = 32;
 
     client.onAny((event: string, ...args: unknown[]) => {
+      if (Buffer.byteLength(JSON.stringify(args)) > 8192 || inboundPending >= MAX_PENDING_EVENTS || this.inboundQueueDepth >= 1024) {
+        client.emit('proxy_busy', { event, retryable: true });
+        return;
+      }
+      inboundPending++;
+      this.inboundQueueDepth++;
       inboundChain = inboundChain.then(async () => {
         // Player-scoped (not IP-scoped) — reconnecting from a different address
         // doesn't reset the counter. Protects the downstream API/Redis from a
@@ -486,13 +495,21 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
         if (backendSocket.connected) {
           backendSocket.emit(event, ...args);
         } else {
+          if (!REPLAY_EVENTS.has(event)) {
+            client.emit('proxy_busy', { event, retryable: true, reason: 'BACKEND_RECOVERING' });
+            return;
+          }
+          if (pendingEvents.length >= MAX_PENDING_EVENTS) {
+            client.emit('proxy_busy', { event, retryable: true });
+            return;
+          }
           pendingEvents.push({ event, args });
         }
       }).catch((err) => {
         this.logger.warn(
           `event=ws_event_forward_failed ns=${namespace} sid=${client.id} evt=${event} err=${(err as Error).message}`,
         );
-      });
+      }).finally(() => { inboundPending--; this.inboundQueueDepth--; });
     });
 
     client.once('disconnect', (reason: string) => {
@@ -666,7 +683,8 @@ export function buildUpstreamHandshake(
   const queryHs = client.handshake.query as Record<string, unknown> | undefined;
 
   const upstreamAuth: Record<string, string> = { token };
-  const upstreamQuery: Record<string, string> = { token };
+  const upstreamQuery: Record<string, string> = {};
+  if (authHs?.commandProtocol === '1') upstreamAuth.commandProtocol = '1';
 
   const langRaw = handshakeString(authHs, queryHs, 'lang').toLowerCase();
   if (langRaw && UPSTREAM_LANG_ALLOWED.has(langRaw)) {

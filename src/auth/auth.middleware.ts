@@ -22,7 +22,7 @@ const REQUIRED_ADMIN_PUBLIC_PATHS = [
  * Must stay aligned with @Public() on the downstream API.
  */
 const DEFAULT_PUBLIC_PATHS =
-  '/api/login,/api/login/refresh,/api/login/invalidate-browser-session,/api/admin/auth/login,/api/admin/auth/refresh,/api/admin/auth/invalidate-browser-session,/api/user/register,/api/user/verify-code,/api/user/public/stats,/api/rooms/stats';
+  '/api/payments/ipn/nowpayments,/api/login,/api/login/refresh,/api/login/invalidate-browser-session,/api/admin/auth/login,/api/admin/auth/refresh,/api/admin/auth/invalidate-browser-session,/api/user/register,/api/user/verify-code,/api/user/public/stats,/api/rooms/stats';
 
 @Injectable()
 export class AuthMiddleware implements NestMiddleware {
@@ -138,6 +138,7 @@ export class AuthMiddleware implements NestMiddleware {
           .map((s) => normalizeGatewayPath(s))
           .filter(Boolean),
       );
+      this.publicPathSet.add('/api/payments/ipn/nowpayments');
       // These endpoints bootstrap the isolated Admin session and can never
       // require an access token at the gateway, even when PUBLIC_API_PATHS is
       // an older deployment override.
