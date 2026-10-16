@@ -1,6 +1,6 @@
 import { Module, Global } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import Redis from 'ioredis';
+import { createGatewayRedis } from './redis.connection';
 import { RedisService } from './redis.service';
 
 @Global()
@@ -9,6 +9,7 @@ import { RedisService } from './redis.service';
   providers: [
     {
       provide: 'REDIS_CLIENT',
+<<<<<<< Updated upstream
       useFactory: (configService: ConfigService): Redis => {
         const redisUrl =
           configService.get<string>('REDIS_URL') ||
@@ -30,6 +31,9 @@ import { RedisService } from './redis.service';
           enableAutoPipelining: true,
         });
       },
+=======
+      useFactory: createGatewayRedis,
+>>>>>>> Stashed changes
       inject: [ConfigService],
     },
     RedisService,

@@ -368,3 +368,14 @@ describe('AuthMiddleware (Gateway)', () => {
     expect(res._status).toBe(0);
   });
 });
+
+describe('AuthMiddleware Redis availability', () => {
+  it('returns temporary unavailability instead of declaring the session invalid when Redis fails', async () => {
+    const redis = { isTokenValid: jest.fn(async () => { throw new Error('Redis unavailable'); }) } as unknown as RedisService;
+    const middleware = new AuthMiddleware(makeJwt(), redis, makeConfig());
+    const res = makeRes(); const next = jest.fn();
+    await middleware.use(makeReq({ headers: { authorization: 'Bearer valid-token' } }), res as unknown as Response, next);
+    expect(res._status).toBe(503);
+    expect(next).not.toHaveBeenCalled();
+  });
+});

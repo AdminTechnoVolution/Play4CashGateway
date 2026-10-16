@@ -95,15 +95,17 @@ export class AuthMiddleware implements NestMiddleware {
         return;
       }
 
-      const isValid = await this.redisService.isTokenValid(
-        token,
-        isAdminRoute
-          ? this.configService.get<string>(
-            'ADMIN_REDIS_ACCESS_PREFIX',
-            ADMIN_REDIS_ACCESS_PREFIX,
-          )
-          : undefined,
-      );
+      let isValid: boolean;
+      try {
+        isValid = await this.redisService.isTokenValid(
+          token,
+          isAdminRoute ? this.configService.get<string>('ADMIN_REDIS_ACCESS_PREFIX', ADMIN_REDIS_ACCESS_PREFIX) : undefined,
+        );
+      } catch {
+        this.logger.warn('event=auth_service_unavailable dependency=redis');
+        res.status(503).json({ statusCode: 503, message: 'AUTH_SERVICE_UNAVAILABLE' });
+        return;
+      }
       if (!isValid) {
         this.recordAuthFailure(req, 'token_revoked');
         res.status(401).json({ statusCode: 401, message: 'Token revoked or expired' });

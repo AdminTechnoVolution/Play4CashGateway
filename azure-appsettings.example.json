@@ -1,0 +1,107 @@
+[
+  {
+    "name": "NODE_ENV",
+    "value": "production",
+    "slotSetting": false
+  },
+  {
+    "name": "JWT_ISSUER",
+    "value": "play4cash-api",
+    "slotSetting": false
+  },
+  {
+    "name": "JWT_AUDIENCE",
+    "value": "play4cash-clients",
+    "slotSetting": false
+  },
+  {
+    "name": "REDIS_TOKEN_PREFIX",
+    "value": "accessTokens:",
+    "slotSetting": false
+  },
+  {
+    "name": "ADMIN_JWT_ISSUER",
+    "value": "play4cash-api",
+    "slotSetting": false
+  },
+  {
+    "name": "ADMIN_JWT_AUDIENCE",
+    "value": "play4cash-admin",
+    "slotSetting": false
+  },
+  {
+    "name": "ADMIN_REDIS_ACCESS_PREFIX",
+    "value": "admin:accessTokens:",
+    "slotSetting": false
+  },
+  {
+    "name": "GATEWAY_TRUST_HEADER_NAME",
+    "value": "x-gateway-internal",
+    "slotSetting": false
+  },
+  {
+    "name": "ENABLE_FAKE_LOGIN",
+    "value": "false",
+    "slotSetting": false
+  },
+  {
+    "name": "ALLOW_HTTP_TOKEN_QUERY",
+    "value": "false",
+    "slotSetting": false
+  },
+  {
+    "name": "RATE_LIMIT_WINDOW_MS",
+    "value": "60000",
+    "slotSetting": false
+  },
+  {
+    "name": "RATE_LIMIT_MAX",
+    "value": "50",
+    "slotSetting": false
+  },
+  {
+    "name": "WS_TOKEN_REVALIDATE_MS",
+    "value": "300000",
+    "slotSetting": false
+  },
+  {
+    "name": "WS_EVENT_RATE_LIMIT_MAX",
+    "value": "30",
+    "slotSetting": false
+  },
+  {
+    "name": "WS_EVENT_RATE_LIMIT_WINDOW_MS",
+    "value": "10000",
+    "slotSetting": false
+  },
+  {
+    "name": "DOWNSTREAM_URL",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "REDIS_URI",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "JWT_SECRET",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "ADMIN_JWT_SECRET_KEY",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "GATEWAY_INTERNAL_SECRET",
+    "value": "",
+    "slotSetting": false
+  },
+  {
+    "name": "CORS_ORIGINS",
+    "value": "",
+    "slotSetting": false
+  }
+]

@@ -201,3 +201,14 @@ Use these optional thresholds to emit warnings only when a request is slow enoug
 | `GATEWAY_AUTH_SLOW_MS` | `25` | Time spent in `AuthMiddleware` for a single request. |
 | `GATEWAY_PROXY_SLOW_MS` | `100` | End-to-end proxy time from gateway entry to response finish. |
 | `GATEWAY_RATE_LIMIT_SLOW_MS` | `20` | Redis-backed rate-limit store calls. |
+
+## Redis: arranque y diagnóstico
+
+El gateway espera la conexión Redis antes de abrir HTTP, con espera máxima inicial de 15 segundos. Mantiene desactivada la cola offline para no acumular acciones durante una caída. No arranca en producción sin una conexión configurada.
+
+- Preferir `REDIS_URI` con el mismo valor de la API. Si el servicio exige TLS, usar `rediss://` y el puerto exacto indicado por el proveedor.
+- Eliminar `REDIS_URL` antiguo si tiene otro valor; si ambos están definidos y son distintos, el arranque lo rechaza explícitamente.
+- `event=redis_ready` confirma conexión lista. `event=redis_connection_error code=...` informa el código sin imprimir credenciales.
+- Si persiste la desconexión, revisar contraseña/usuario, DNS, TLS, firewall y acceso privado/VNet del App Service al Redis. No compartir la URL con contraseña en registros o chats.
+
+Una conexión inicial correcta no garantiza conectividad ininterrumpida. Si Redis cae durante operación, la protección de peticiones permanece activa y los clientes deben esperar o reintentar.
