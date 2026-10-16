@@ -74,6 +74,56 @@ function makeRedis(valid: boolean): RedisService {
   return { isTokenValid: jest.fn(async () => valid) } as unknown as RedisService;
 }
 
+describe('AuthMiddleware (Gateway) — fake-login path gating', () => {
+  const ORIGINAL_ENABLE_FAKE_LOGIN = process.env.ENABLE_FAKE_LOGIN;
+  const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
+
+  afterEach(() => {
+    if (ORIGINAL_ENABLE_FAKE_LOGIN === undefined) delete process.env.ENABLE_FAKE_LOGIN;
+    else process.env.ENABLE_FAKE_LOGIN = ORIGINAL_ENABLE_FAKE_LOGIN;
+    if (ORIGINAL_NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = ORIGINAL_NODE_ENV;
+  });
+
+  it('requires auth for /api/login/fake when ENABLE_FAKE_LOGIN is unset', async () => {
+    delete process.env.ENABLE_FAKE_LOGIN;
+    const mw = new AuthMiddleware(makeJwt(), makeRedis(false), makeConfig());
+    const next = jest.fn() as NextFunction;
+    const res = makeRes();
+
+    await mw.use(makeReq({ path: '/api/login/fake' }), res as unknown as import('express').Response, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res._status).toBe(401);
+  });
+
+  it('lets /api/login/fake through unauthenticated when ENABLE_FAKE_LOGIN=true outside production', async () => {
+    process.env.ENABLE_FAKE_LOGIN = 'true';
+    process.env.NODE_ENV = 'test';
+    const mw = new AuthMiddleware(makeJwt(), makeRedis(false), makeConfig());
+    const next = jest.fn() as NextFunction;
+    const res = makeRes();
+
+    await mw.use(makeReq({ path: '/api/login/fake' }), res as unknown as import('express').Response, next);
+
+    expect(next).toHaveBeenCalled();
+    expect(res._status).toBe(0);
+  });
+
+  it('still requires auth for /api/login/fake when NODE_ENV=production, even if ENABLE_FAKE_LOGIN=true', async () => {
+    process.env.ENABLE_FAKE_LOGIN = 'true';
+    process.env.NODE_ENV = 'production';
+    const mw = new AuthMiddleware(makeJwt(), makeRedis(false), makeConfig());
+    const next = jest.fn() as NextFunction;
+    const res = makeRes();
+
+    await mw.use(makeReq({ path: '/api/login/fake' }), res as unknown as import('express').Response, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res._status).toBe(401);
+  });
+});
+
 describe('AuthMiddleware (Gateway)', () => {
   it('skips auth for /api/user/public/stats when PUBLIC_API_PATHS falls back to code defaults', async () => {
     const config = {

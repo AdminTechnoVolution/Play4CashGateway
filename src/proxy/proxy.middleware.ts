@@ -59,6 +59,15 @@ export class ProxyMiddleware implements NestMiddleware {
       req.headers['x-request-id'] = requestId;
     }
 
+    // Never elevate a client-provided identity or location header using our internal secret.
+    delete (req.headers as Record<string, unknown>)['x-gateway-user'];
+    delete (req.headers as Record<string, unknown>)['x-p4c-geo-country'];
+    const geoPeers = (this.configService.get<string>('GEO_TRUSTED_PROXY_IPS') ?? '').split(',').map(v => v.trim()).filter(Boolean);
+    const peer = req.socket?.remoteAddress ?? '';
+    const country = req.headers['cf-ipcountry'];
+    if (geoPeers.includes(peer) && typeof country === 'string' && /^[A-Z]{2}$/.test(country)) {
+      req.headers['x-p4c-geo-country'] = country;
+    }
     const user = (req as Request & { user?: unknown }).user;
     if (user) {
       delete (req.headers as Record<string, unknown>)['x-gateway-user'];

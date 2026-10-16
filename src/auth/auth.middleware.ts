@@ -5,6 +5,7 @@ import { Request, Response, NextFunction } from 'express';
 import { RedisService } from '../redis/redis.service';
 import { createRequestId, getCurrentRequestId } from '../common/request-context';
 import { normalizeGatewayPath } from '../common/http-path.util';
+import { FAKE_LOGIN_PATH, isFakeLoginEnabled } from '../common/fake-login.util';
 
 const ACCESS_COOKIE_NAME = 'p4c_access';
 const ADMIN_ACCESS_COOKIE_NAME = 'p4c_admin_access';
@@ -21,7 +22,7 @@ const REQUIRED_ADMIN_PUBLIC_PATHS = [
  * Must stay aligned with @Public() on the downstream API.
  */
 const DEFAULT_PUBLIC_PATHS =
-  '/api/login,/api/login/refresh,/api/login/invalidate-browser-session,/api/admin/auth/login,/api/admin/auth/refresh,/api/admin/auth/invalidate-browser-session,/api/user/register,/api/user/verify-code,/api/user/public/stats,/api/rooms/stats';
+  '/api/payments/ipn/nowpayments,/api/login,/api/login/refresh,/api/login/invalidate-browser-session,/api/admin/auth/login,/api/admin/auth/refresh,/api/admin/auth/invalidate-browser-session,/api/user/register,/api/user/verify-code,/api/user/public/stats,/api/rooms/stats';
 
 @Injectable()
 export class AuthMiddleware implements NestMiddleware {
@@ -139,11 +140,18 @@ export class AuthMiddleware implements NestMiddleware {
           .map((s) => normalizeGatewayPath(s))
           .filter(Boolean),
       );
+      this.publicPathSet.add('/api/payments/ipn/nowpayments');
       // These endpoints bootstrap the isolated Admin session and can never
       // require an access token at the gateway, even when PUBLIC_API_PATHS is
       // an older deployment override.
       for (const requiredPath of REQUIRED_ADMIN_PUBLIC_PATHS) {
         this.publicPathSet.add(requiredPath);
+      }
+      // Test-only login bypass — only reachable unauthenticated when explicitly
+      // enabled (and never in production). The API applies the identical gate
+      // independently, so this can't drift into being the weaker link.
+      if (isFakeLoginEnabled()) {
+        this.publicPathSet.add(FAKE_LOGIN_PATH);
       }
     }
 
