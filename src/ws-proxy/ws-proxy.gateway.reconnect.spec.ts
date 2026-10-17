@@ -24,6 +24,7 @@ interface FakeClient {
   id: string;
   handshake: any;
   onAny: jest.Mock;
+  offAny: jest.Mock;
   once: jest.Mock;
   emit: jest.Mock;
   disconnect: jest.Mock;
@@ -94,6 +95,7 @@ function makeClient(): FakeClient {
     onAny: jest.fn((cb: Handler) => {
       onAnyCb = cb;
     }),
+    offAny: jest.fn(),
     once: jest.fn((event: string, cb: Handler) => {
       clientHandlers.set(event, cb);
     }),

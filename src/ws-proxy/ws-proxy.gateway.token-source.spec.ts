@@ -29,6 +29,7 @@ function makeClient(handshake: Record<string, unknown>) {
     id: 'sid-1',
     handshake: { auth: {}, query: {}, headers: {}, address: '127.0.0.1', ...handshake },
     onAny: jest.fn(),
+    offAny: jest.fn(),
     once: jest.fn(),
     emit: jest.fn(),
     disconnect: jest.fn(),

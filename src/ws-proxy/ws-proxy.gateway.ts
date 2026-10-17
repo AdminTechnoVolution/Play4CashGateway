@@ -57,6 +57,11 @@ interface UserTrack {
   resultEmittedRoomIds: Set<string>;
 }
 
+/** Events a client may send before its session is wired (token checks still running). */
+const MAX_EARLY_EVENTS = 32;
+/** Idempotent control events that may wait for the upstream connection instead of being refused. */
+const QUEUEABLE_EVENTS = new Set(['command_state', 'command_status', 'initial_state_ack']);
+
 export const PROXY_NAMESPACES = [
   '/chat',
   '/rooms',
@@ -287,6 +292,15 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       authHeader?.replace(/^Bearer\s+/i, '') ||
       '';
 
+    // The PWA emits its join as soon as `connect` fires, while the token checks below
+    // are still awaiting. Socket.IO drops events that have no listener, so hold them
+    // until the session is wired instead of losing the first join of every match.
+    const early: { event: string; args: unknown[] }[] = [];
+    const hold = (event: string, ...args: unknown[]): void => {
+      if (early.length < MAX_EARLY_EVENTS) early.push({ event, args });
+    };
+    client.onAny(hold);
+
     if (!token) {
       this.recordWsFailure(namespace, client, 'missing_token');
       client.disconnect(true);
@@ -340,7 +354,7 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       this.wireSession(client, namespace, token, playerId, parked.backendSocket, {
         lastJoin: parked.lastJoin,
         pendingEvents: parked.pendingEvents,
-      });
+      }, { hold, early });
       client.emit('proxy_reconnected', { namespace, resumed: true });
       return;
     }
@@ -360,7 +374,7 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
       ...SOCKET_IO_PING_OPTIONS,
     });
 
-    this.wireSession(client, namespace, token, playerId, backendSocket);
+    this.wireSession(client, namespace, token, playerId, backendSocket, undefined, { hold, early });
   }
 
   private wireSession(
@@ -372,6 +386,10 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     resume?: {
       lastJoin: { event: string; args: unknown[] } | null;
       pendingEvents: { event: string; args: unknown[] }[];
+    },
+    held?: {
+      hold: (event: string, ...args: unknown[]) => void;
+      early: { event: string; args: unknown[] }[];
     },
   ): void {
     this.sessions.set(client.id, {
@@ -465,7 +483,7 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
     let inboundPending = 0;
     const MAX_PENDING_EVENTS = 32;
 
-    client.onAny((event: string, ...args: unknown[]) => {
+    const inbound = (event: string, ...args: unknown[]): void => {
       if (Buffer.byteLength(JSON.stringify(args)) > 8192 || inboundPending >= MAX_PENDING_EVENTS || this.inboundQueueDepth >= 1024) {
         client.emit('proxy_busy', { event, retryable: true });
         return;
@@ -495,7 +513,9 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
         if (backendSocket.connected) {
           backendSocket.emit(event, ...args);
         } else {
-          if (!REPLAY_EVENTS.has(event)) {
+          // Reads and start acknowledgements are idempotent: wait for the upstream instead of
+          // refusing them (a fresh session is never connected yet when the first join arrives).
+          if (!REPLAY_EVENTS.has(event) && !QUEUEABLE_EVENTS.has(event)) {
             client.emit('proxy_busy', { event, retryable: true, reason: 'BACKEND_RECOVERING' });
             return;
           }
@@ -510,7 +530,10 @@ export class WsProxyGateway implements OnGatewayInit, OnModuleDestroy {
           `event=ws_event_forward_failed ns=${namespace} sid=${client.id} evt=${event} err=${(err as Error).message}`,
         );
       }).finally(() => { inboundPending--; this.inboundQueueDepth--; });
-    });
+    };
+    if (held) client.offAny(held.hold);
+    client.onAny(inbound);
+    for (const { event, args } of held?.early.splice(0) ?? []) inbound(event, ...args);
 
     client.once('disconnect', (reason: string) => {
       this.unregisterClientNamespace(playerId, namespace);

@@ -26,7 +26,10 @@ export class ProxyMiddleware implements NestMiddleware {
     const middleware = createProxyMiddleware<IncomingMessage, ServerResponse>({
       target: downstreamUrl,
       changeOrigin: true,
-      ws: true,
+      // Never proxy upgrades: with `ws: true` the first /api request subscribes this proxy to
+      // every server upgrade, so /socket.io upgrades got a second 101 from the API written
+      // into the gateway's own WebSocket and every client transport broke. WsProxyGateway owns sockets.
+      ws: false,
       on: {
         error: (err, _req, res) => {
           this.logger.error(`Proxy error: ${(err as Error).message}`);
