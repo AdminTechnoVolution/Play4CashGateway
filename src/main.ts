@@ -123,12 +123,14 @@ async function bootstrap(): Promise<void> {
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     // Includes X-App-Version so the PWA can publish its running build to every API call.
     // Idempotency-Key: POST /api/rooms (create room) — required or browsers block preflight.
+    // X-P4C-Command-Protocol: sent on every PWA call when VITE_RELIABLE_COMMANDS=true (FINANCE_V2).
     allowedHeaders: [
       'Content-Type',
       'Authorization',
       'accept-language',
       'X-App-Version',
       'Idempotency-Key',
+      'X-P4C-Command-Protocol',
     ],
     // Exposes X-App-Min-Version so the PWA can read it (browsers hide non-simple response
     // headers from JS unless explicitly exposed). Drives the forced-update modal.
